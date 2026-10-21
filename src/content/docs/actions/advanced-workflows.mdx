@@ -1,0 +1,616 @@
+---
+title: Advanced workflow patterns
+description: Reusable workflows vs composite actions, dynamic matrices, concurrency, environments and protection rules, workflow chaining, path filters vs required checks, merge queue, monorepos, conditionals, service containers and YAML anchors.
+sidebar:
+  order: 30
+---
+
+import { Aside, Badge, Tabs, TabItem } from '@astrojs/starlight/components';
+import { TLDR, DocsLinks, LastVerified, CompareTable, FlashCards } from '@components';
+
+<LastVerified date="2026-10" />
+
+<TLDR>
+- To share a **whole pipeline** (jobs, runners, environments, secrets), use a **reusable workflow** (`workflow_call`). To share a **few steps**, use a **composite action**.
+- Make a matrix **dynamic** by emitting JSON from a prior job and reading it with `fromJSON(needs.plan.outputs.matrix)`. The limit is 256 jobs per run.
+- Concurrency: on PRs, `cancel-in-progress: true` per PR. For deploys, use **no cancel** per environment. `queue: max` keeps up to 100 pending runs in order.
+- **Path- or branch-filtered workflows that never run leave required checks "Pending" forever.** Use a job-level `if:` or an always-run aggregator job instead.
+- Merge queue only works if your required workflows also listen to **`on: merge_group`**.
+</TLDR>
+
+## Common booth questions
+
+<details>
+<summary>Reusable workflow or composite action — which should I use?</summary>
+
+Use a **reusable workflow** when you need multiple jobs, your own `runs-on`, environments with approvals, or secrets.
+It is also the right choice when you want a **central, governed pipeline** that teams call but cannot change, for
+example for SLSA Build L3 provenance or deployments that are locked by runner groups. Use a **composite action** to bundle
+steps that run *inside* the caller's job, such as "set up toolchain + cache + login". Many orgs use both: reusable
+workflows that call composite actions. See the [comparison table](#reusable-workflows-vs-composite-actions).
+
+</details>
+
+<details>
+<summary>How deep can reusable workflows nest? Is there a limit on how many I can call?</summary>
+
+They can nest up to **10 levels** (caller plus 9 nested). One top-level workflow file can reference at most **50 unique
+reusable workflows**, and that count includes nested trees. Composite actions can nest up to 10 composite actions in
+one workflow.
+`GITHUB_TOKEN` permissions can only stay the same or be **reduced** as you go down the chain.
+
+</details>
+
+<details>
+<summary>Why do my required checks stay "Expected — Waiting for status to be reported"?</summary>
+
+The workflow was **skipped by a `paths`, `branches` or commit-message filter**, so it never reported a status, and the
+check stays Pending. A **job** that is skipped by `if:`, on the other hand, reports **Success**. The fix is to run the
+workflow every time and skip jobs inside it, or to make a single always-run aggregator job the required check. See
+[path filters vs required checks](#path-filters-vs-required-checks).
+
+</details>
+
+<details>
+<summary>How do I build only the services that changed in my monorepo?</summary>
+
+Add a "plan" job that diffs against the base SHA and outputs a JSON list of changed packages. Then feed that list into a
+**dynamic matrix** with `fromJSON`. Guard the job with `if:` so that an empty list skips it instead of failing. See
+[monorepo pattern](#monorepo-pattern-build-only-what-changed).
+
+</details>
+
+<details>
+<summary>Can a deployment wait for a ServiceNow change ticket or a Datadog health check?</summary>
+
+Yes. Use **custom deployment protection rules** <Badge text="Public preview" variant="caution" />. These are GitHub Apps that receive
+a `deployment_protection_rule` webhook and approve or reject the job through the API. You can have up to 6 protection rules per
+environment. Required reviewers and wait timers are built-in rules. For **private** repos, those two rules require GitHub
+Enterprise.
+
+</details>
+
+<details>
+<summary>How do I chain workflow A to workflow B?</summary>
+
+There are three options:
+
+1. **Reusable workflow**. `jobs.x.uses:` gives you one run and one log, with outputs. This is the best option.
+2. **`workflow_run`**. B triggers when A completes. B runs in the default-branch context **with secrets**, so be careful if A ran on fork PRs. You can chain at most 3 levels.
+3. **`repository_dispatch`** or **`workflow_dispatch`** through the API, using a GitHub App token. This works across repos.
+
+See [chaining workflows](#chaining-workflows).
+
+</details>
+
+<details>
+<summary>Does Actions support YAML anchors now?</summary>
+
+Yes, anchors (`&name`) and aliases (`*name`) are officially supported and documented, for example to reuse an `env:` block or a
+whole job. Merge keys (`<<:`) are **not** mentioned in the docs, so don't rely on them.
+
+</details>
+
+<details>
+<summary>Can a PR from a fork poison my cache?</summary>
+
+There are now safer defaults. Low-trust triggers such as `pull_request_target`, `issue_comment` and `workflow_run` get
+**read-only** access to default-branch caches. The new `jobs.<id>.cache-mode` (`read` / `write` / `write-only` / `none`) gives you
+explicit control. Don't set `write` on low-trust triggers.
+
+</details>
+
+## Reusable workflows vs composite actions
+
+<CompareTable
+	title="Reusable workflow vs composite action"
+	columns={[
+		{ key: 'rw', label: 'Reusable workflow' },
+		{ key: 'ca', label: 'Composite action' },
+	]}
+	rows={[
+		{ feature: 'Defined in', category: 'Shape', values: { rw: '`.github/workflows/*.yml` with `on: workflow_call`', ca: '`action.yml` with `runs: using: composite`' } },
+		{ feature: 'Called from', category: 'Shape', values: { rw: 'A **job** (`jobs.<id>.uses`)', ca: 'A **step** (`steps[].uses`)' } },
+		{ feature: 'Contains multiple jobs', category: 'Shape', values: { rw: true, ca: false } },
+		{ feature: 'Chooses its own runner', category: 'Shape', values: { rw: true, ca: 'No — runs on caller job runner' } },
+		{ feature: 'Environments / approvals', category: 'Capabilities', values: { rw: true, ca: false } },
+		{ feature: 'Secrets', category: 'Capabilities', values: { rw: '`secrets:` or `secrets: inherit`', ca: 'Only via `with:` inputs/env' } },
+		{ feature: 'Outputs', category: 'Capabilities', values: { rw: 'Job-level outputs to caller', ca: 'Step outputs' } },
+		{ feature: 'Add steps after it in same job', category: 'Capabilities', values: { rw: false, ca: true } },
+		{ feature: 'Logging', category: 'Operations', values: { rw: 'Every job & step separately', ca: 'One collapsed step' } },
+		{ feature: 'Nesting limit', category: 'Operations', values: { rw: '10 levels; 50 unique per file', ca: 'Up to 10 nested per workflow' } },
+		{ feature: 'Publish to Marketplace', category: 'Operations', values: { rw: false, ca: true } },
+		{ feature: 'Caller `env:` propagated', category: 'Gotchas', values: { rw: 'No — use inputs or `vars`', ca: 'Yes (runs in same job)' } },
+	]}
+/>
+
+<Tabs>
+<TabItem label="Callee (reusable)">
+
+```yaml
+# my-org/platform/.github/workflows/deploy.yml
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+    secrets:
+      DEPLOY_KEY:
+        required: false
+    outputs:
+      url:
+        description: Deployed URL
+        value: ${{ jobs.deploy.outputs.url }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      url: ${{ steps.d.outputs.url }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: d
+        run: echo "url=https://${{ inputs.environment }}.example.com" >> "$GITHUB_OUTPUT"
+```
+
+</TabItem>
+<TabItem label="Caller">
+
+```yaml
+jobs:
+  deploy:
+    uses: my-org/platform/.github/workflows/deploy.yml@v3   # tag, branch or SHA
+    with:
+      environment: staging
+    secrets: inherit          # same org/enterprise only; or map secrets explicitly
+    permissions:
+      contents: read
+      id-token: write
+
+  smoke-test:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsS "${{ needs.deploy.outputs.url }}/health"
+```
+
+</TabItem>
+<TabItem label="Composite action">
+
+```yaml
+# my-org/actions/setup-toolchain/action.yml
+name: Setup toolchain
+inputs:
+  node-version:
+    default: '22'
+outputs:
+  cache-hit:
+    value: ${{ steps.node.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - id: node
+      uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+    - run: npm ci
+      shell: bash          # `shell` is REQUIRED on run steps in composite actions
+```
+
+</TabItem>
+<TabItem label="Gotchas">
+
+- A job that calls a reusable workflow can use only `name`, `uses`, `with`, `secrets`, `strategy`, `needs`, `if`, `concurrency`, `permissions` and `cache-mode`. It cannot use `runs-on`, `steps` or `env`.
+- **`env:` from the caller is not passed down.** Use `inputs`, or org/repo `vars`.
+- The `github` context in the callee is the **caller's** context. `github.workflow` is the caller's name, which matters for concurrency groups (see below).
+- For OIDC, `job_workflow_ref` identifies the reusable workflow. Cloud trust policies can require that **only your central deploy workflow** may assume the role.
+- If you re-run *failed* jobs, the reusable workflow is resolved from the **same SHA** as the first attempt. If you re-run *all* jobs, the ref is resolved again.
+- An org policy that requires SHA pinning applies to actions. **Reusable workflows are exempt** and can still use tags.
+
+</TabItem>
+</Tabs>
+
+## Matrix strategies
+
+### Static matrix with include/exclude
+
+```yaml
+strategy:
+  fail-fast: false          # default true: one failure cancels the rest
+  max-parallel: 4           # throttle (e.g. shared test DB / licence limits)
+  matrix:
+    os: [ubuntu-latest, windows-latest, macos-latest]
+    node: [20, 22, 24]
+    exclude:
+      - os: macos-latest
+        node: 20
+    include:
+      - os: ubuntu-24.04-arm   # add a one-off combination
+        node: 24
+      - node: 24               # add a key to existing combos
+        experimental: true
+continue-on-error: ${{ matrix.experimental == true }}
+```
+
+- **Use case:** cross-OS and cross-version test grids.
+- **Gotcha:** `include` entries that match an existing combination **extend** it with new keys. Entries that don't match create a new job. Original matrix values cannot be overwritten, but added values can.
+- **Limit:** 256 jobs per workflow run. Support cannot raise it.
+
+### Dynamic matrix from a prior job
+
+```yaml
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        run: echo 'matrix={"include":[{"svc":"api","dir":"services/api"},{"svc":"web","dir":"apps/web"}]}' >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - run: echo "Building ${{ matrix.svc }} in ${{ matrix.dir }}"
+```
+
+- **Gotcha:** an **empty** matrix fails the workflow. Guard the job with an `if:` that checks for an empty list (see the monorepo pattern below).
+- **Gotcha:** output strings must be valid single-line JSON. Use `jq -c` to build them.
+
+## Concurrency patterns
+
+<Tabs>
+<TabItem label="Per PR (cancel stale)">
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+```
+
+**Use case:** a new push to a PR cancels the now-stale run. This is the biggest cost saver for busy repos.
+
+</TabItem>
+<TabItem label="Per environment (never cancel)">
+
+```yaml
+jobs:
+  deploy:
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false   # never kill a deploy halfway
+```
+
+**Use case:** serialize deployments. **Gotcha:** by default only **one** run can be *pending*. A newer pending run
+replaces an older pending run, so intermediate commits are skipped. That is usually what you want for deployments.
+
+</TabItem>
+<TabItem label="Queue everything">
+
+```yaml
+concurrency:
+  group: production-deploy
+  queue: max          # up to 100 pending runs, FIFO
+```
+
+**Use case:** every run must execute in order, for example database migrations or a release train.
+**Gotcha:** `queue: max` together with `cancel-in-progress: true` is a validation error.
+
+</TabItem>
+<TabItem label="Conditional cancel">
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+```
+
+**Use case:** cancel stale PR runs, but let every run on `main` finish.
+
+</TabItem>
+</Tabs>
+
+<Aside type="caution" title="Reusable workflow trap">
+A callee sees `github.workflow` as the **caller's** name. If both the caller and the callee use
+`group: ${{ github.workflow }}-${{ github.ref }}` with `cancel-in-progress: true`, the callee **cancels its own caller**.
+Add a suffix in the callee, for example `-deploy`. Group names are case-insensitive.
+</Aside>
+
+## Environments and deployment protection rules
+
+```yaml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - id: deploy
+        run: ./deploy.sh   # environment secrets are only released after all rules pass
+```
+
+| Rule | What it does | Notes |
+| --- | --- | --- |
+| Required reviewers | Up to 6 users or teams. One approval is enough. Optionally **prevent self-review**. | Private repos need Enterprise. |
+| Wait timer | 1–43,200 min (30 days). | Does not use billable minutes. Private repos need Enterprise. |
+| Deployment branches/tags | Only `main` or `release/*` can deploy. | Available on Pro and Team for private repos. |
+| Custom protection rule <Badge text="Preview" variant="caution" /> | A GitHub App (ServiceNow, Datadog, Honeycomb, New Relic, or your own) approves or rejects. | Up to 6 rules in total per environment. |
+| Admin bypass toggle | Disallow admins from bypassing. | |
+
+- **Talking point:** environment-scoped OIDC subjects (`repo:org/repo:environment:production`) mean that the cloud role can **only** be assumed after the approvals pass.
+- **Gotcha:** a run can wait at most **30 days** for approval, and a workflow run lasts at most 35 days overall.
+
+```mermaid
+sequenceDiagram
+    participant WF as "Workflow job (environment: production)"
+    participant GH as "GitHub"
+    participant App as "Custom rule App (e.g. ServiceNow)"
+    participant Rev as "Required reviewer"
+    WF->>GH: Job requests environment
+    GH->>App: deployment_protection_rule webhook
+    GH->>Rev: Review requested
+    App-->>GH: Approve (API callback)
+    Rev-->>GH: Approve
+    GH->>WF: Release env secrets, start job
+```
+
+## Chaining workflows
+
+```mermaid
+flowchart LR
+    U["Human / API"] -- "workflow_dispatch (inputs)" --> CI["CI workflow"]
+    EXT["External system"] -- "repository_dispatch (client_payload)" --> CI
+    CI -- "jobs.x.uses (workflow_call)" --> RW["Reusable deploy workflow"]
+    CI -- "completes" --> WR["Post-CI workflow (on: workflow_run)"]
+```
+
+| Trigger | Use case | Gotchas |
+| --- | --- | --- |
+| `workflow_call` | Shared pipelines that give you one run, one log, outputs and secrets. | 10 levels deep, 50 unique per file. |
+| `workflow_run` | Run privileged follow-ups after an untrusted CI run, such as commenting on fork PRs or publishing reports. | Max **3 levels** of chaining. The workflow must be on the default branch. It has secrets and a write token, so **never check out and run PR code** in it. |
+| `workflow_dispatch` | Manual or API-triggered runs with typed inputs (`string`, `boolean`, `choice`, `number`, `environment`). | Max 25 top-level inputs and 65,535 characters of payload. The workflow must be on the default branch to appear in the UI. |
+| `repository_dispatch` | Cross-repo or external triggers (`POST /repos/{owner}/{repo}/dispatches`). | Max 10 top-level `client_payload` properties. It runs only on the default branch. |
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: environment      # dropdown of repo environments
+        required: true
+      dry-run:
+        type: boolean
+        default: true
+      log-level:
+        type: choice
+        options: [info, debug]
+  repository_dispatch:
+    types: [deploy-requested]
+```
+
+<Aside type="note">
+The `GITHUB_TOKEN` cannot trigger *new* workflows, except through `workflow_dispatch` or `repository_dispatch`. To chain
+across repos, use a **GitHub App installation token** (for example from `actions/create-github-app-token`) rather than
+a PAT.
+</Aside>
+
+## Path filters vs required checks
+
+**The pitfall:** suppose `on: pull_request: paths: ['src/**']` is set and the workflow is a **required** check. A
+docs-only PR then never runs the workflow, the check stays **Pending**, and the PR cannot merge.
+
+```mermaid
+flowchart TD
+    PR["PR touches docs/ only"] --> F{"Workflow-level paths filter?"}
+    F -- "yes" --> P["Workflow never runs: check stays Pending, PR blocked"]
+    F -- "no" --> J{"Job-level if: skips?"}
+    J -- "yes" --> S["Job reports Success, PR can merge"]
+    J -- "no" --> R["Job runs normally"]
+```
+
+The fix is an **always-run aggregator job**. Make **only** `ci-ok` the required check:
+
+```yaml
+on: [pull_request, merge_group]
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      src: ${{ steps.f.outputs.src }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: f
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          if git diff --name-only "$BASE" HEAD | grep -q '^src/'; then
+            echo "src=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "src=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.src == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: make test
+
+  ci-ok:
+    if: always()                 # must run even when deps fail or are skipped
+    needs: [changes, test]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+```
+
+- **Gotcha:** without `if: always()`, a failure upstream **skips** `ci-ok`, and a skipped job reports **Success**. That would let broken PRs merge.
+- **Gotcha:** required status checks match on the **job name** (check-run name). If you rename the job, you must update the ruleset or branch protection.
+
+## Merge queue
+
+```yaml
+on:
+  pull_request:
+  merge_group:            # REQUIRED, or the queue waits forever for checks
+    types: [checks_requested]
+```
+
+- **Use case:** busy `main` branches. The queue tests **PR + everything ahead of it** before merging, so you avoid the "green PR, red main" problem.
+- Enable it with branch protection or a ruleset: **Require merge queue**.
+- **Gotcha:** for a `merge_group` event, `github.ref` is a temporary `gh-readonly-queue/...` branch. Diff against `github.event.merge_group.base_sha`.
+- **Gotcha:** branch or path filters that skip the workflow on `merge_group` cause the same Pending problem as above.
+
+## Monorepo pattern: build only what changed
+
+```yaml
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.s.outputs.services }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: s
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          svcs=$(git diff --name-only "$BASE" HEAD -- services/ \
+                 | cut -d/ -f2 | sort -u | jq -R . | jq -cs .)
+          echo "services=$svcs" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.services != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.plan.outputs.services) }}
+    uses: ./.github/workflows/build-service.yml     # reusable workflow per service
+    with:
+      service: ${{ matrix.service }}
+```
+
+- **Talking points:** combine this with an aggregator required check (see above), per-service `concurrency` groups, and cache keys scoped by `hashFiles('services/<svc>/package-lock.json')`.
+- Third-party change-detection actions exist, but review them and SHA-pin them like any other action.
+
+## Conditional jobs and status functions
+
+| Expression | Runs when… |
+| --- | --- |
+| *(none)* = `success()` | All previous steps or `needs` succeeded. |
+| `always()` | Always, **even if the run was cancelled**. |
+| `!cancelled()` | Always, unless the run was cancelled. This is usually what people mean by "always". |
+| `failure()` | A previous step or needed job failed. Use it for notifications and rollback. |
+| `cancelled()` | The run was cancelled. |
+
+```yaml
+- name: Notify on failure
+  if: ${{ failure() && github.ref == 'refs/heads/main' }}
+  run: ./notify-slack.sh
+```
+
+- **Gotcha:** an expression that starts with `!` must be wrapped: `if: ${{ !cancelled() }}`. A bare `!` is a YAML tag.
+- **Gotcha:** `secrets.*` cannot be used directly in `if:`. Map the secret to `env:` at job level and test `env.MY_SECRET != ''`.
+
+## Job containers and service containers
+
+```yaml
+jobs:
+  integration:
+    runs-on: ubuntu-latest        # Linux runners only for container/services
+    container: node:22            # all run steps execute inside this image
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: npm ci && npm run test:integration
+        env:
+          DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+```
+
+- **Gotcha:** if the job runs **in a container**, reach services by their **label as hostname** (`postgres:5432`). If the job runs directly on the runner, map `ports:` and use `localhost`.
+- **Gotcha:** container jobs and service containers need a **Linux** runner with Docker. On ARC, use `dind` or Kubernetes container mode.
+
+## YAML anchors
+
+```yaml
+jobs:
+  test: &base_job
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: npm test
+  test-nightly: *base_job          # identical copy of the job
+
+  lint:
+    env: &common_env
+      NODE_ENV: ci
+      FORCE_COLOR: '1'
+    runs-on: ubuntu-latest
+    steps: [{ run: npm run lint }]
+  build:
+    env: *common_env
+    runs-on: ubuntu-latest
+    steps: [{ run: npm run build }]
+```
+
+- **Use case:** DRY within **one** file. To reuse across files or repos, use reusable workflows or composite actions.
+- **Gotcha:** aliases copy content as-is. Merge keys (`<<:`) to override parts are not documented, so avoid them.
+
+## Quick quiz
+
+<FlashCards
+	title="Advanced workflows quiz"
+	cards={[
+		{ q: 'Max reusable-workflow nesting depth?', a: '10 levels; max 50 unique reusable workflows per top-level file.' },
+		{ q: 'Max chained `workflow_run` levels?', a: '3' },
+		{ q: 'A job skipped by `if:` reports what status?', a: '**Success** — it will not block a required check.' },
+		{ q: 'A workflow skipped by a `paths` filter reports what?', a: 'Nothing — the required check stays **Pending**.' },
+		{ q: 'Which event must a required workflow add for merge queue?', a: '`merge_group`' },
+		{ q: 'Can `queue: max` combine with `cancel-in-progress: true`?', a: 'No — validation error.' },
+		{ q: 'Max matrix jobs per workflow run?', a: '256' },
+		{ q: 'Does caller `env:` reach a reusable workflow?', a: 'No — use `inputs` or `vars`.' },
+	]}
+/>
+
+<DocsLinks
+	links={[
+		{ label: 'Reusing workflow configurations (limits, anchors)', href: 'https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations' },
+		{ label: 'Reuse workflows (how-to)', href: 'https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows' },
+		{ label: 'Creating a composite action', href: 'https://docs.github.com/en/actions/tutorials/create-actions/create-a-composite-action' },
+		{ label: 'Workflow syntax (matrix, concurrency, cache-mode)', href: 'https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax' },
+		{ label: 'Events that trigger workflows', href: 'https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows' },
+		{ label: 'Deployments and environments reference', href: 'https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments' },
+		{ label: 'Configure custom protection rules', href: 'https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/configure-custom-protection-rules' },
+		{ label: 'Managing a merge queue', href: 'https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue' },
+		{ label: 'Control jobs with conditions', href: 'https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions' },
+		{ label: 'Actions limits', href: 'https://docs.github.com/en/actions/reference/limits' },
+	]}
+/>

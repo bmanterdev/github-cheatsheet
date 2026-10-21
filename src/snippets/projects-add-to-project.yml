@@ -1,0 +1,17 @@
+name: Triage into org project
+on:
+  issues:
+    types: [opened, labeled]
+
+jobs:
+  add-to-project:
+    runs-on: ubuntu-latest
+    steps:
+      # A GITHUB_TOKEN cannot write to org-level Projects:
+      # use a GitHub App token or a PAT with project scope.
+      - uses: actions/add-to-project@v2
+        with:
+          project-url: https://github.com/orgs/my-org/projects/42
+          github-token: ${{ secrets.ADD_TO_PROJECT_TOKEN }}
+          labeled: bug, needs-triage
+          label-operator: OR
