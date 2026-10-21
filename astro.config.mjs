@@ -12,12 +12,33 @@ const group = (directory, label, ja, collapsed = false) => ({
 	items: [{ autogenerate: { directory } }],
 });
 
+/** Keep raw Mermaid source out of the Pagefind search index (runs before Starlight's Pagefind hook). */
+const pagefindIgnoreMermaid = () => ({
+	name: 'pagefind-ignore-mermaid',
+	hooks: {
+		'astro:build:done': async ({ dir }) => {
+			const { readdir, readFile, writeFile } = await import('node:fs/promises');
+			const { fileURLToPath } = await import('node:url');
+			const root = fileURLToPath(dir);
+			for (const f of await readdir(root, { recursive: true })) {
+				if (!f.endsWith('.html')) continue;
+				const p = `${root}/${f}`;
+				const html = await readFile(p, 'utf8');
+				if (html.includes('<pre class="mermaid">')) {
+					await writeFile(p, html.replaceAll('<pre class="mermaid">', '<pre class="mermaid" data-pagefind-ignore>'));
+				}
+			}
+		},
+	},
+});
+
 export default defineConfig({
 	site: 'https://bmanterdev.github.io',
 	base: '/github-cheatsheet',
 	// Mermaid is large but lazy-loaded only on pages with diagrams.
 	vite: { build: { chunkSizeWarningLimit: 4000 } },
 	integrations: [
+		pagefindIgnoreMermaid(),
 		// astro-mermaid MUST be listed before Starlight.
 		mermaid({
 			theme: 'default',

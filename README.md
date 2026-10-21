@@ -30,6 +30,30 @@ npm run preview   # serve dist/ locally
 
 One-time setup: **Settings → Pages → Build and deployment → Source = "GitHub Actions"**.
 
+## Re-verify before the event
+
+Content was last verified in 2026-10. github.blog and the changelog were unreachable while it was written, so it is sourced mainly from docs.github.com. Pages flag uncertain facts with a **Verify** / **要確認** or **Preview** badge. Spot-check these before quoting them:
+
+- **Copilot:**
+  - AI Credits allowances and per-model prices.
+  - The Auto model discount; the Max 30% offer ends 2026-10-28.
+  - Whether "Agent HQ" / "Mission Control" is still the current name.
+  - Content exclusion support in Copilot CLI (the docs contradict each other).
+  - Training-data opt-out terms for individual plans.
+- **Actions:**
+  - Any 2026 self-hosted runner pricing change.
+  - The `pull_request_target` policy enforcement date (2026-11-02).
+  - Cache limits.
+  - Latest action major versions (e.g. `actions/checkout`).
+- **GHAS:**
+  - Pricing per active committer (not printed on the site).
+  - Copilot Autofix for third-party tools.
+  - Preview status of the secret-scanning ruleset rule and CodeQL model packs.
+- **Platform:**
+  - Latest GHES release (3.22 at the time of writing).
+  - The GEI 40 GiB limit (preview).
+  - Bitbucket Cloud support in GEI.
+
 ## Project structure
 
 ```
