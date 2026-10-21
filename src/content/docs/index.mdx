@@ -1,0 +1,36 @@
+---
+title: GitHub Expert Center Cheat Sheet
+description: Fast, booth-ready answers about GitHub Actions, Copilot, Advanced Security and more — for the GitHub Universe Expert Center.
+template: splash
+hero:
+  tagline: Booth-ready answers about GitHub Actions, Copilot, Advanced Security and the rest of the platform. Search with <kbd>/</kbd> or <kbd>Ctrl</kbd>+<kbd>K</kbd>.
+  actions:
+    - text: How to use this site
+      link: /github-cheatsheet/start-here/how-to-use/
+      icon: right-arrow
+    - text: 日本語
+      link: /github-cheatsheet/ja/
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## Priority topics
+
+<CardGrid>
+	<LinkCard title="⚙️ GitHub Actions" description="Workflows, runners, OIDC, security hardening, reuse." href="/github-cheatsheet/actions/" />
+	<LinkCard title="🤖 GitHub Copilot" description="Plans, features, agents, policies, rollout." href="/github-cheatsheet/copilot/" />
+	<LinkCard title="🛡️ GitHub Advanced Security" description="Code scanning, secret protection, Dependabot." href="/github-cheatsheet/ghas/" />
+</CardGrid>
+
+## More topics
+
+<CardGrid>
+	<LinkCard title="🚚 Migration" href="/github-cheatsheet/migration/" />
+	<LinkCard title="📈 Adoption & Rollout" href="/github-cheatsheet/adoption/" />
+	<LinkCard title="🏢 Administration" href="/github-cheatsheet/administration/" />
+	<LinkCard title="💳 Billing & Licensing" href="/github-cheatsheet/billing/" />
+	<LinkCard title="☁️ Codespaces" href="/github-cheatsheet/codespaces/" />
+	<LinkCard title="🗂️ Projects & Issues" href="/github-cheatsheet/projects-issues/" />
+	<LinkCard title="📦 Packages" href="/github-cheatsheet/packages/" />
+</CardGrid>

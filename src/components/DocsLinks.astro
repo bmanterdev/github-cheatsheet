@@ -1,0 +1,58 @@
+---
+/**
+ * <DocsLinks> — "📚 GitHub Docs" reference list placed at the end of a page.
+ *   <DocsLinks links={[{ label: 'About GitHub Actions', href: 'https://docs.github.com/en/actions' }]} />
+ * External links open in a new tab. Defaults heading by lang: "GitHub Docs" / "GitHub ドキュメント".
+ */
+import { isExternal, labelsFor, resolveLang } from './i18n';
+
+interface Props {
+	links: { label: string; href: string; description?: string }[];
+	heading?: string;
+	lang?: 'en' | 'ja';
+}
+const { links = [], heading, lang } = Astro.props;
+const t = labelsFor(resolveLang(lang, Astro.currentLocale));
+const title = heading ?? t.docs;
+---
+
+<nav class="gh-docslinks" aria-label={title}>
+	<p class="gh-docslinks__title"><span aria-hidden="true">📚</span> {title}</p>
+	<ul>
+		{
+			links.map((link) => (
+				<li>
+					<a
+						href={link.href}
+						{...(isExternal(link.href) ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+					>
+						{link.label}
+						{isExternal(link.href) && <span aria-hidden="true"> ↗</span>}
+					</a>
+					{link.description && <span class="gh-docslinks__desc"> — {link.description}</span>}
+				</li>
+			))
+		}
+	</ul>
+</nav>
+
+<style>
+	.gh-docslinks {
+		margin-top: 2rem;
+		padding: 0.85rem 1.1rem;
+		border-top: 1px solid var(--sl-color-gray-5);
+	}
+	.gh-docslinks__title {
+		margin: 0 0 0.35rem;
+		font-weight: 700;
+		color: var(--sl-color-white);
+	}
+	.gh-docslinks ul {
+		margin: 0;
+		padding-inline-start: 1.2rem;
+	}
+	.gh-docslinks__desc {
+		color: var(--sl-color-gray-3);
+		font-size: var(--sl-text-sm);
+	}
+</style>

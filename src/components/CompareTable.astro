@@ -1,0 +1,219 @@
+---
+/**
+ * <CompareTable> — filterable comparison matrix.
+ *
+ *   <CompareTable
+ *     title="Copilot plans"
+ *     columns={[{ key: 'free', label: 'Free' }, { key: 'biz', label: 'Business' }]}
+ *     rows={[
+ *       { feature: 'Code completion', category: 'IDE', values: { free: true, biz: true } },
+ *       { feature: 'Premium requests / month', category: 'Usage', values: { free: '50', biz: '300' } },
+ *     ]}
+ *   />
+ *
+ * Booleans render as ✅ / —. String values accept inline Markdown (**bold**, `code`, [link](url)).
+ * Missing values render as —. Column chips toggle visibility; category select appears only if any
+ * row has a category; text filter matches feature, category and cell text.
+ */
+import { inlineMd, labelsFor, resolveLang, type LabelKey } from './i18n';
+
+type Value = string | number | boolean | null | undefined;
+
+interface Props {
+	columns: { key: string; label: string }[];
+	rows: { feature: string; category?: string; values: Record<string, Value> }[];
+	title?: string;
+	featureLabel?: string;
+	lang?: 'en' | 'ja';
+	labels?: Partial<Record<LabelKey, string>>;
+}
+
+const { columns = [], rows = [], title, featureLabel, lang, labels } = Astro.props;
+const t = labelsFor(resolveLang(lang, Astro.currentLocale), labels);
+const categories = [...new Set(rows.map((r) => r.category).filter(Boolean))] as string[];
+
+function cell(v: Value) {
+	if (v === true) return `<span class="gh-ct__yes" role="img" aria-label="${t.yes}">✅</span>`;
+	if (v === false || v === null || v === undefined || v === '')
+		return `<span class="gh-ct__no" role="img" aria-label="${t.no}">—</span>`;
+	return inlineMd(String(v));
+}
+---
+
+<gh-compare-table class="gh-widget not-content">
+	{title && <p class="gh-widget__title">📊 {title}</p>}
+	<div class="gh-ct__controls">
+		<div class="gh-ct__chips" role="group" aria-label={t.showColumns}>
+			<span class="gh-ct__control-label">{t.showColumns}:</span>
+			{
+				columns.map((c) => (
+					<label class="gh-chip">
+						<input type="checkbox" class="sr-only" data-col-toggle={c.key} checked />
+						{c.label}
+					</label>
+				))
+			}
+		</div>
+		<div class="gh-ct__filters">
+			{
+				categories.length > 0 && (
+					<label>
+						<span class="sr-only">{t.category}</span>
+						<select class="gh-input" data-category-filter>
+							<option value="">{t.allCategories}</option>
+							{categories.map((c) => (
+								<option value={c}>{c}</option>
+							))}
+						</select>
+					</label>
+				)
+			}
+			<label>
+				<span class="sr-only">{t.filter}</span>
+				<input type="search" class="gh-input" data-text-filter placeholder={t.filterPlaceholder} />
+			</label>
+		</div>
+	</div>
+	<div class="gh-ct__scroll">
+		<table>
+			<thead>
+				<tr>
+					<th scope="col">{featureLabel ?? t.feature}</th>
+					{
+						columns.map((c) => (
+							<th scope="col" data-col={c.key}>
+								{c.label}
+							</th>
+						))
+					}
+				</tr>
+			</thead>
+			<tbody>
+				{
+					rows.map((r) => (
+						<tr data-category={r.category ?? ''}>
+							<th scope="row">
+								<span set:html={inlineMd(r.feature)} />
+								{r.category && <span class="gh-ct__cat">{r.category}</span>}
+							</th>
+							{columns.map((c) => (
+								<td data-col={c.key} set:html={cell(r.values?.[c.key])} />
+							))}
+						</tr>
+					))
+				}
+			</tbody>
+		</table>
+		<p class="gh-ct__empty" hidden>{t.noRows}</p>
+	</div>
+</gh-compare-table>
+
+<script>
+	class GhCompareTable extends HTMLElement {
+		connectedCallback() {
+			if (this.dataset.ready) return;
+			this.dataset.ready = 'true';
+			this.addEventListener('input', () => this.#update());
+			this.addEventListener('change', () => this.#update());
+			this.#update();
+		}
+
+		#update() {
+			const hidden = new Set(
+				[...this.querySelectorAll<HTMLInputElement>('[data-col-toggle]')]
+					.filter((c) => !c.checked)
+					.map((c) => c.dataset.colToggle!),
+			);
+			this.querySelectorAll<HTMLElement>('[data-col]').forEach((el) => {
+				el.hidden = hidden.has(el.dataset.col!);
+			});
+			const category = this.querySelector<HTMLSelectElement>('[data-category-filter]')?.value ?? '';
+			const query = (this.querySelector<HTMLInputElement>('[data-text-filter]')?.value ?? '').trim().toLowerCase();
+			let visible = 0;
+			this.querySelectorAll<HTMLTableRowElement>('tbody tr').forEach((tr) => {
+				const show =
+					(!category || tr.dataset.category === category) &&
+					(!query || (tr.textContent ?? '').toLowerCase().includes(query));
+				tr.hidden = !show;
+				if (show) visible++;
+			});
+			this.querySelector<HTMLElement>('.gh-ct__empty')!.hidden = visible > 0;
+		}
+	}
+
+	if (!customElements.get('gh-compare-table')) customElements.define('gh-compare-table', GhCompareTable);
+</script>
+
+<style>
+	gh-compare-table {
+		display: block;
+		margin-top: 1.5rem;
+	}
+	.gh-ct__controls {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		gap: 0.75rem;
+		margin-bottom: 0.75rem;
+	}
+	.gh-ct__chips {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.gh-ct__control-label {
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-2);
+	}
+	.gh-ct__filters {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+	.gh-ct__scroll {
+		overflow-x: auto;
+	}
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: var(--sl-text-sm);
+	}
+	th,
+	td {
+		padding: 0.45rem 0.65rem;
+		border-bottom: 1px solid var(--sl-color-gray-5);
+		text-align: start;
+		vertical-align: top;
+		color: var(--sl-color-white);
+	}
+	thead th {
+		background: var(--sl-color-gray-6);
+		white-space: nowrap;
+		position: sticky;
+		top: 0;
+	}
+	td {
+		text-align: center;
+	}
+	tbody th {
+		font-weight: 500;
+	}
+	tbody tr:hover > * {
+		background: var(--sl-color-accent-low);
+	}
+	.gh-ct__cat {
+		display: block;
+		font-size: var(--sl-text-xs);
+		color: var(--sl-color-gray-3);
+		font-weight: 400;
+	}
+	.gh-ct__no {
+		color: var(--sl-color-gray-3);
+	}
+	.gh-ct__empty {
+		margin: 0.75rem 0 0;
+		color: var(--sl-color-gray-2);
+		font-style: italic;
+	}
+</style>

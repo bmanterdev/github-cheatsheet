@@ -1,0 +1,219 @@
+---
+/**
+ * <DecisionTree> — guided Q&A: one question at a time, breadcrumb of choices, back & restart.
+ *
+ *   <DecisionTree title="Which runner?" tree={{
+ *     start: 'q1',
+ *     nodes: {
+ *       q1: { question: 'Need GPU?', options: [{ label: 'Yes', next: 'gpu' }, { label: 'No', next: 'std' }] },
+ *       gpu: { answer: 'Use **GPU larger runners**.', links: [{ label: 'Docs', href: 'https://docs.github.com/...' }] },
+ *       std: { answer: 'Standard `ubuntu-latest` is fine.' },
+ *     },
+ *   }} />
+ *
+ * `question` / `answer` accept inline Markdown (**bold**, `code`, [link](url)) or raw HTML.
+ * All nodes are rendered server-side (so Pagefind indexes them); JS only toggles visibility.
+ */
+import { inlineMd, isExternal, labelsFor, resolveLang, type LabelKey } from './i18n';
+
+type QuestionNode = { question: string; help?: string; options: { label: string; next: string }[] };
+type AnswerNode = { answer: string; links?: { label: string; href: string }[] };
+export type DecisionTreeData = { start: string; nodes: Record<string, QuestionNode | AnswerNode> };
+
+interface Props {
+	tree: DecisionTreeData;
+	title?: string;
+	lang?: 'en' | 'ja';
+	labels?: Partial<Record<LabelKey, string>>;
+}
+
+const { tree, title, lang, labels } = Astro.props;
+const t = labelsFor(resolveLang(lang, Astro.currentLocale), labels);
+
+if (!tree?.nodes?.[tree.start]) {
+	throw new Error(`DecisionTree: start node "${tree?.start}" not found.`);
+}
+for (const [id, node] of Object.entries(tree.nodes)) {
+	if ('options' in node) {
+		for (const opt of node.options) {
+			if (!tree.nodes[opt.next]) throw new Error(`DecisionTree: node "${id}" points to missing node "${opt.next}".`);
+		}
+	}
+}
+---
+
+<gh-decision-tree class="gh-widget not-content" data-start={tree.start}>
+	{title && <p class="gh-widget__title">🧭 {title}</p>}
+	<nav class="gh-dt__crumbs" aria-label={t.yourPath} hidden>
+		<ol></ol>
+	</nav>
+	<div class="gh-dt__stage" aria-live="polite">
+		{
+			Object.entries(tree.nodes).map(([id, node]) => (
+				<section class="gh-dt__node" data-node={id} hidden={id !== tree.start} tabindex="-1">
+					{'options' in node ? (
+						<>
+							<p class="gh-dt__question" set:html={inlineMd(node.question)} />
+							{node.help && <p class="gh-dt__help" set:html={inlineMd(node.help)} />}
+							<div class="gh-dt__options" role="group">
+								{node.options.map((opt) => (
+									<button type="button" class="gh-btn gh-dt__option" data-next={opt.next}>
+										{opt.label}
+									</button>
+								))}
+							</div>
+						</>
+					) : (
+						<div class="gh-dt__answer">
+							<div class="gh-dt__answer-body" set:html={inlineMd(node.answer)} />
+							{node.links && node.links.length > 0 && (
+								<ul class="gh-dt__links">
+									{node.links.map((l) => (
+										<li>
+											<a
+												href={l.href}
+												{...(isExternal(l.href) ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+											>
+												{l.label}
+												{isExternal(l.href) && <span aria-hidden="true"> ↗</span>}
+											</a>
+										</li>
+									))}
+								</ul>
+							)}
+						</div>
+					)}
+				</section>
+			))
+		}
+	</div>
+	<div class="gh-dt__controls">
+		<button type="button" class="gh-btn" data-action="back" disabled>← {t.back}</button>
+		<button type="button" class="gh-btn" data-action="restart" disabled>↺ {t.startOver}</button>
+	</div>
+</gh-decision-tree>
+
+<script>
+	type Step = { node: string; choice?: string };
+
+	class GhDecisionTree extends HTMLElement {
+		#history: Step[] = [];
+
+		connectedCallback() {
+			if (this.dataset.ready) return;
+			this.dataset.ready = 'true';
+			this.#history = [{ node: this.dataset.start! }];
+			this.addEventListener('click', (e) => {
+				const target = (e.target as HTMLElement).closest('button');
+				if (!target || !this.contains(target)) return;
+				if (target.dataset.next) {
+					this.#history.push({ node: target.dataset.next, choice: target.textContent?.trim() });
+					this.#render(true);
+				} else if (target.dataset.action === 'back' && this.#history.length > 1) {
+					this.#history.pop();
+					this.#render(true);
+				} else if (target.dataset.action === 'restart') {
+					this.#history = this.#history.slice(0, 1);
+					this.#render(true);
+				}
+			});
+			this.#render(false);
+		}
+
+		#render(moveFocus: boolean) {
+			const current = this.#history[this.#history.length - 1].node;
+			let active: HTMLElement | null = null;
+			this.querySelectorAll<HTMLElement>('.gh-dt__node').forEach((el) => {
+				const isActive = el.dataset.node === current;
+				el.hidden = !isActive;
+				if (isActive) active = el;
+			});
+			const crumbs = this.querySelector<HTMLElement>('.gh-dt__crumbs')!;
+			const list = crumbs.querySelector('ol')!;
+			list.replaceChildren(
+				...this.#history.slice(1).map((step) => {
+					const li = document.createElement('li');
+					li.textContent = step.choice ?? '';
+					return li;
+				}),
+			);
+			crumbs.hidden = this.#history.length < 2;
+			const atStart = this.#history.length < 2;
+			this.querySelectorAll<HTMLButtonElement>('[data-action]').forEach((b) => (b.disabled = atStart));
+			if (moveFocus && active) {
+				const firstOption = (active as HTMLElement).querySelector<HTMLElement>('.gh-dt__option');
+				(firstOption ?? (active as HTMLElement)).focus({ preventScroll: true });
+			}
+		}
+	}
+
+	if (!customElements.get('gh-decision-tree')) customElements.define('gh-decision-tree', GhDecisionTree);
+</script>
+
+<style>
+	gh-decision-tree {
+		display: block;
+		margin-top: 1.5rem;
+	}
+	.gh-dt__crumbs ol {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.25rem;
+		margin: 0 0 0.75rem;
+		padding: 0;
+		list-style: none;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-2);
+	}
+	.gh-dt__crumbs li {
+		padding: 0.1rem 0.5rem;
+		border-radius: 999px;
+		background: var(--sl-color-accent-low);
+		color: var(--sl-color-accent-high);
+	}
+	.gh-dt__crumbs li + li::before {
+		content: '›';
+		margin-inline-end: 0.35rem;
+		color: var(--sl-color-gray-3);
+	}
+	.gh-dt__node:focus {
+		outline: none;
+	}
+	.gh-dt__question {
+		margin: 0 0 0.5rem;
+		font-size: var(--sl-text-lg);
+		font-weight: 600;
+		color: var(--sl-color-white);
+	}
+	.gh-dt__help {
+		margin: 0 0 0.5rem;
+		color: var(--sl-color-gray-2);
+		font-size: var(--sl-text-sm);
+	}
+	.gh-dt__options {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+	.gh-dt__answer {
+		padding: 0.75rem 1rem;
+		border-inline-start: 4px solid var(--gh-success);
+		border-radius: 0.375rem;
+		background: color-mix(in srgb, var(--gh-success) 12%, transparent);
+		color: var(--sl-color-white);
+	}
+	.gh-dt__answer-body :global(code) {
+		font-size: 0.9em;
+	}
+	.gh-dt__links {
+		margin: 0.5rem 0 0;
+		padding-inline-start: 1.2rem;
+	}
+	.gh-dt__controls {
+		display: flex;
+		gap: 0.5rem;
+		margin-top: 1rem;
+		padding-top: 0.75rem;
+		border-top: 1px solid var(--sl-color-gray-5);
+	}
+</style>

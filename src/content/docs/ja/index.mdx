@@ -1,0 +1,36 @@
+---
+title: GitHub エキスパートセンター チートシート
+description: GitHub Universe エキスパートセンター向け — GitHub Actions、Copilot、Advanced Security などの質問にすばやく答えるためのチートシート。
+template: splash
+hero:
+  tagline: GitHub Actions、Copilot、Advanced Security をはじめとするプラットフォーム全体の質問に、ブースですぐ答えるためのチートシート。<kbd>/</kbd> または <kbd>Ctrl</kbd>+<kbd>K</kbd> で検索。
+  actions:
+    - text: このサイトの使い方
+      link: /github-cheatsheet/ja/start-here/how-to-use/
+      icon: right-arrow
+    - text: English
+      link: /github-cheatsheet/
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## 優先トピック
+
+<CardGrid>
+	<LinkCard title="⚙️ GitHub Actions" description="ワークフロー、ランナー、OIDC、セキュリティ強化、再利用。" href="/github-cheatsheet/ja/actions/" />
+	<LinkCard title="🤖 GitHub Copilot" description="プラン、機能、エージェント、ポリシー、展開。" href="/github-cheatsheet/ja/copilot/" />
+	<LinkCard title="🛡️ GitHub Advanced Security" description="コードスキャン、シークレット保護、Dependabot。" href="/github-cheatsheet/ja/ghas/" />
+</CardGrid>
+
+## その他のトピック
+
+<CardGrid>
+	<LinkCard title="🚚 移行" href="/github-cheatsheet/ja/migration/" />
+	<LinkCard title="📈 導入と展開" href="/github-cheatsheet/ja/adoption/" />
+	<LinkCard title="🏢 管理" href="/github-cheatsheet/ja/administration/" />
+	<LinkCard title="💳 請求とライセンス" href="/github-cheatsheet/ja/billing/" />
+	<LinkCard title="☁️ Codespaces" href="/github-cheatsheet/ja/codespaces/" />
+	<LinkCard title="🗂️ Projects & Issues" href="/github-cheatsheet/ja/projects-issues/" />
+	<LinkCard title="📦 Packages" href="/github-cheatsheet/ja/packages/" />
+</CardGrid>
