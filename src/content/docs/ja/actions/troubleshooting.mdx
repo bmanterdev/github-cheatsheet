@@ -1,0 +1,291 @@
+---
+title: トラブルシューティング
+description: デバッグログ、よくあるエラーの一覧、ワークフローが起動しない理由、gh run CLI、ジョブサマリー、問題マッチャー、ローカルテストで GitHub Actions を素早くデバッグする。
+sidebar:
+  order: 80
+---
+
+import { TLDR, DocsLinks, LastVerified, DecisionTree, FlashCards } from '@components';
+import { Aside, Badge, Tabs, TabItem } from '@astrojs/starlight/components';
+
+<LastVerified date="2026-10" />
+
+<TLDR>
+- **ログを増やす**: **ジョブの再実行 → デバッグログを有効にする** を使うか、シークレットまたは変数に `ACTIONS_STEP_DEBUG=true`（ステップログ）と `ACTIONS_RUNNER_DEBUG=true`（ランナー診断）を設定します。
+- **起動しなかった？** 次を確認します: ワークフローが既定ブランチにあるか（`schedule` と `issues` の場合）、パスやブランチのフィルターに一致したか、`[skip ci]` を使っていないか、PR にマージコンフリクトがないか、イベントが **`GITHUB_TOKEN`** によるものでないか（新しい実行をトリガーしない）。
+- **「Resource not accessible by integration」** は `GITHUB_TOKEN` のスコープ不足です。`permissions:` ブロックに追加してください。
+- **必須チェックが「Expected — Waiting」のまま** の場合、たいていはパスフィルターでワークフローが一度も実行されていません。
+- **ターミナルから** は `gh run view --log-failed` と `gh run rerun --failed --debug` でほとんど対応できます。PR のマージボックスから Copilot に失敗した実行を説明させることもできます。
+</TLDR>
+
+## ブースでよくある質問
+
+<details>
+<summary>より詳細なログを取得するには？</summary>
+
+- **手軽な方法:** **ジョブの再実行** をクリックし、**デバッグログを有効にする** にチェックを入れます。ワークフローを実行できる人なら誰でも使えます。
+- **常時有効にする方法:** リポジトリのシークレットまたは変数として `ACTIONS_STEP_DEBUG` = `true`（詳細なステップログ）と `ACTIONS_RUNNER_DEBUG` = `true`（ランナーとワーカーのプロセスログ）を作成します。ランナーのログは、ダウンロードしたログアーカイブの `runner-diagnostic-logs/` に含まれます。シークレットと変数の両方を設定した場合はシークレットが優先されます。
+- `if: runner.debug == '1'` を使うと、デバッグが有効なときだけ追加の診断ステップを実行できます。
+
+</details>
+
+<details>
+<summary>ワークフローがコミットを push／PR を作成したのに、それに対して CI が動きません。バグですか？</summary>
+
+いいえ、仕様です。リポジトリの **`GITHUB_TOKEN`** で作成されたイベントは、無限ループを防ぐために新しいワークフロー実行を開始しません。例外は `workflow_dispatch` と `repository_dispatch` です。ワークフローを連鎖させるには、**GitHub App のインストールトークン** を使うか、`workflow_dispatch` を明示的に呼び出すか、`workflow_run` を使います。
+
+</details>
+
+<details>
+<summary>「Resource not accessible by integration」とはどういう意味ですか？</summary>
+
+`GITHUB_TOKEN`（または GitHub App トークン）に、API 呼び出しに必要な権限がありません。`pull-requests: write`、`issues: write`、`packages: write`、`id-token: write` など、必要なスコープを `permissions:` に追加してください。次の原因も確認してください。
+- Organization の既定が読み取り専用で、`permissions:` を宣言すると記載しなかったスコープは `none` になる。
+- **フォーク PR**（読み取り専用トークン）や Dependabot による実行である。
+- Organization の設定で PR の作成・承認が無効になっている。
+- トークンで*別の*リポジトリにアクセスしようとしている。`GITHUB_TOKEN` は現在のリポジトリにスコープされるため、リポジトリをまたぐ場合は App トークンを使う。
+
+</details>
+
+<details>
+<summary>PR の必須チェックが「Expected — Waiting for status to be reported」のままです。</summary>
+
+たいていはワークフローが **`paths` やブランチのフィルターでスキップ** され、チェックが一度も報告されていません。スキップされた*ワークフロー*では、必須チェックは **保留** のままになります。一方、`if:` 条件でスキップされたジョブは **成功** を報告します。対処法:
+- パスフィルターを外し、変更ファイルを調べるステップと `if:` を組み合わせて、ジョブ **内部** でフィルタリングする。
+- 他のジョブを `needs:` する常に実行される「ゲート」ジョブを追加し、*それ*を必須チェックにする。
+- ルールセットのジョブ名やチェック名が、マトリックスの接尾辞も含めて完全に一致しているか確認する。
+- **マージキュー** を使う場合は `merge_group` トリガーを追加する。
+
+</details>
+
+<details>
+<summary>スケジュール実行のワークフローが止まった／遅れて実行されます。</summary>
+
+- `schedule` は **既定ブランチからのみ** 実行されます。cron の時刻は UTC で、混雑時、特に毎時0分前後には実行が **遅延したり破棄されたり** することがあるため、半端な分を指定してください。
+- ワークフローの **アクター** が停止、削除、またはプロビジョニング解除されると、スケジュールは止まります。`cron` 行に何らかの変更をコミットすると直ります。
+- **パブリック** リポジトリでは、リポジトリに一定期間（60日間）アクティビティがないと、スケジュール実行のワークフローが自動で無効になります。Actions タブから再度有効にしてください。
+
+</details>
+
+<details>
+<summary>ワークフローをローカルでテストできますか？</summary>
+
+部分的にはできます。**[`act`](https://github.com/nektos/act)** は人気のある **コミュニティツールで、GitHub の製品ではありません**。ジョブを Docker で実行するため素早い反復には便利ですが、イメージ、コンテキスト、OIDC、キャッシュ、サービスの挙動は本物のランナーと異なります。他の選択肢として、ブランチでの `workflow_dispatch`、検証用リポジトリ、静的チェック用の **actionlint**、VS Code の GitHub Actions 拡張機能による検証があります。ランナー固有の難しい問題には、本物のランナーでのデバッグ再実行が最も確実です。
+
+</details>
+
+<details>
+<summary>キャッシュがまったくヒットしません。</summary>
+
+よくある原因:
+- キーに `github.sha` やタイムスタンプなど、毎回変わる値が含まれている。
+- `hashFiles` が何にも一致せず、キーの末尾が空のハッシュになっている。
+- 実行が **兄弟ブランチや別の PR** で行われており、キャッシュを共有できない。
+- 前回のジョブが **失敗** したため、キャッシュが保存されていない。
+- 7日間アクセスがなかったか、サイズ上限のためにキャッシュが **削除** された。
+- 保存時と復元時で `path` が異なり、キャッシュの *version* が変わっている。
+- 実行が読み取り専用キャッシュの **低信頼トリガー** で、保存が警告付きでスキップされた。
+
+`cache-hit` 出力と **Actions → Caches** を確認してください。
+
+</details>
+
+<details>
+<summary>セルフホストランナーが「Offline」になる／ジョブが「Queued」のまま進みません。</summary>
+
+- ランナーのサービスと、GitHub への送信 HTTPS 通信（プロキシ設定や TLS インスペクションを含む）を確認します。
+- ランナーのバージョンが最新か確認します。古いランナーはジョブを受け取れなくなります。
+- ジョブの `runs-on` ラベルが完全に一致しているか確認します。GitHub ホストのラベルと重複するカスタムラベルは避けてください。
+- **ランナーグループ** がそのリポジトリやワークフローを許可しているか確認します。
+- ジョブは最大 **24時間** キューで待機した後、キャンセルされます。
+
+ARC の場合はリスナーとコントローラーの Pod を確認します。ランナーのログは `ACTIONS_RUNNER_DEBUG` で取得できます。
+
+</details>
+
+## 判定: ワークフローが実行されなかったのはなぜ？
+
+<DecisionTree
+  title="ワークフローが実行されなかったのはなぜ？"
+  tree={{
+    start: 'q1',
+    nodes: {
+      q1: {
+        question: '**Actions** タブに実行が表示されていますか（スキップ、キュー待ち、失敗も含む）？',
+        options: [
+          { label: '実行がまったくない', next: 'q2' },
+          { label: 'キュー待ちのまま', next: 'queued' },
+          { label: '起動時またはポリシーのエラーが表示される', next: 'policy' },
+        ],
+      },
+      q2: {
+        question: 'ワークフローは **有効** で、YAML は正しいですか？ Actions タブに「workflow file issue」のバナーがないか確認してください。',
+        options: [
+          { label: '無効、または不正', next: 'disabled' },
+          { label: '有効で正しい', next: 'q3' },
+        ],
+      },
+      disabled: {
+        answer: 'ワークフローを再度有効にするか、YAML を修正してください。リポジトリや Organization で Actions が許可されていること、ファイルが **500 KB** 以下であることも確認してください。パブリックリポジトリのスケジュール実行のワークフローは、60日間アクティビティがないと自動で無効になります。',
+        links: [{ label: 'ワークフローの無効化と有効化', href: 'https://docs.github.com/ja/actions/how-tos/manage-workflow-runs/disable-and-enable-workflows' }],
+      },
+      q3: {
+        question: 'トリガーとなったイベントは、**`GITHUB_TOKEN`** を使うワークフローが起こしたもの（ボットのステップによる push、PR、コメント）ですか？',
+        options: [
+          { label: 'はい', next: 'token' },
+          { label: 'いいえ', next: 'q4' },
+        ],
+      },
+      token: {
+        answer: 'これは **仕様** です。`GITHUB_TOKEN` によるイベントは新しい実行をトリガーしません（例外は `workflow_dispatch` と `repository_dispatch`）。**GitHub App トークン** か明示的なディスパッチを使ってください。',
+        links: [{ label: 'GITHUB_TOKEN', href: 'https://docs.github.com/ja/actions/concepts/security/github_token' }],
+      },
+      q4: {
+        question: 'どのイベントですか？',
+        options: [
+          { label: 'schedule / issues など既定ブランチのみのイベント', next: 'defbranch' },
+          { label: 'pull_request', next: 'q5' },
+          { label: 'push', next: 'q6' },
+        ],
+      },
+      defbranch: {
+        answer: 'これらのイベントは **既定ブランチ上のワークフローファイルからのみ** 実行されます。まずファイルをマージしてください。`schedule` の場合は、UTC での時刻、負荷による遅延、アクターのアカウントが有効かどうかも確認してください。',
+      },
+      q5: {
+        question: 'PR に **マージコンフリクト** がありますか？ それとも **フォーク／初回コントリビューター** からの PR ですか？',
+        options: [
+          { label: 'マージコンフリクト', next: 'conflict' },
+          { label: 'フォーク／初回コントリビューター', next: 'approval' },
+          { label: 'どちらでもない', next: 'q6' },
+        ],
+      },
+      conflict: { answer: 'PR にマージコンフリクトがある間、`pull_request` ワークフローは **実行されません**。解消してから push してください。' },
+      approval: {
+        answer: '実行が **承認待ち** になっている可能性があります（メンテナーが「Approve and run」をクリック）。プライベートリポジトリでは、Organization／リポジトリでフォーク PR のワークフローも許可されている必要があります。',
+      },
+      q6: {
+        question: '`branches`、`tags`、`paths` のフィルターがこの変更を除外していませんか？ またはコミットメッセージに `[skip ci]` が含まれていませんか？',
+        options: [
+          { label: 'はい／その可能性あり', next: 'filters' },
+          { label: 'いいえ', next: 'q7' },
+        ],
+      },
+      filters: {
+        answer: 'フィルターで除外された実行は **作成されません**。パスフィルターが評価するのは **最初の 3,000 個の変更ファイル** だけです。このワークフローが必須チェックの場合、PR は永遠に待機するため、ジョブ内でのフィルタリングかゲートジョブを使ってください。',
+        links: [{ label: 'フィルターパターンのチートシート', href: 'https://docs.github.com/ja/actions/reference/workflows-and-actions/workflow-syntax#filter-pattern-cheat-sheet' }],
+      },
+      q7: {
+        answer: 'トリガーやユーザーをブロックする **Actions のイベント／アクターポリシー**、**トリガーのレート制限**（リポジトリあたり 10秒で 1,500 イベント）、Webhook の配信問題がないか確認してください。そのうえで `on:` をイベントのドキュメントと照らし合わせてください。',
+        links: [{ label: 'ワークフローのトラブルシューティング', href: 'https://docs.github.com/ja/actions/how-tos/troubleshoot-workflows' }],
+      },
+      queued: {
+        answer: 'ジョブを受け取ったランナーがありません。`runs-on` のラベルがオンラインのランナーと一致しているか、**ランナーグループ** がこのリポジトリやワークフローを許可しているか、**同時実行の上限** や `concurrency:` グループに達していないかを確認してください。大きいランナーの場合は、課金と支払い方法も確認してください。ジョブはキューで **24時間** 待機するとキャンセルされます。',
+      },
+      policy: {
+        answer: 'エラーを読んでください。よくある原因は、ポリシーで許可されていないアクション、SHA ピン留めが必須なのに SHA で固定されていないアクション、Actions ポリシーで許可されていないイベント（例: `pull_request_target`）、課金や利用上限への到達です。',
+        links: [{ label: 'Actions ポリシーについて', href: 'https://docs.github.com/ja/actions/concepts/about-actions-policies' }],
+      },
+    },
+  }}
+/>
+
+## よくあるエラー
+
+| 症状／メッセージ | 考えられる原因 | 対処 |
+| --- | --- | --- |
+| `Resource not accessible by integration`（HTTP 403） | `GITHUB_TOKEN` のスコープ不足、フォーク PR、リポジトリをまたぐ呼び出し | `permissions:` にスコープを追加するか、GitHub App トークンを使う |
+| ワークフローが作成した push や PR で CI が起動しない | `GITHUB_TOKEN` で作成したイベントは実行を作成しない | GitHub App トークンか `workflow_dispatch` を使う |
+| 必須チェックが「Expected — Waiting for status」 | パスやブランチのフィルターでワークフローがスキップされた、またはチェック名の不一致 | ゲートジョブかジョブ内フィルタリングを使い、名前を完全に一致させる |
+| `API rate limit exceeded` | `GITHUB_TOKEN` は **リポジトリあたり 1,000 リクエスト/時**（Enterprise Cloud は 15,000）、加えてセカンダリレート制限 | 呼び出しをまとめる、キャッシュやバックオフを入れる、App トークンを使う |
+| 毎回キャッシュミス | キーが毎回変わる、スコープ違い、削除、ジョブの失敗、読み取り専用トリガー | 上記のキャッシュの回答を参照 |
+| セルフホストランナーが「Offline」 | サービス停止、ネットワークやプロキシの問題、ランナーが古い | サービスを再起動し、送信通信を確認し、ランナーを更新する |
+| ジョブが「Queued」のまま | 一致するラベルがない、ランナーグループの制限、同時実行の上限 | ラベルやグループのアクセスを修正し、上限を確認する |
+| `The job was not started because recent account payments have failed or your spending limit needs to be increased` | 課金または予算 | 支払い方法を修正するか、予算を調整する |
+| `Event '…' is not allowed to trigger Actions workflows` | Actions ポリシー（イベントまたはアクタールール） | トリガーを変更するか、ポリシーを更新する |
+| ジョブをキャンセルできない | `if: always()` で動き続けている | `if: ${{ !cancelled() }}` を使うか、強制キャンセル API を使う |
+| `Error: Process completed with exit code 1` 以外に何も出ない | ツール自体の失敗 | その上の行を読む、ツールの詳細出力フラグを有効にする、デバッグ付きで再実行する |
+
+## `gh` CLI チートシート
+
+```bash
+gh run list --workflow ci.yml --branch main --limit 10   # 最近の実行
+gh run watch                                             # 実行をライブで追跡
+gh run view <run-id> --log-failed                        # 失敗したステップのログだけ
+gh run view <run-id> --job <job-id> --log                # ジョブの全ログ
+gh run rerun <run-id> --failed --debug                   # 失敗したジョブをデバッグログ付きで再実行
+gh run download <run-id> -n my-artifact                  # 成果物の取得
+gh workflow run deploy.yml -f env=staging --ref my-branch  # workflow_dispatch をトリガー
+gh workflow enable|disable ci.yml
+gh cache list && gh cache delete <key>                   # キャッシュの確認・削除
+```
+
+## 失敗をわかりやすくする: ジョブサマリーと問題マッチャー
+
+<Tabs>
+<TabItem label="ジョブサマリー">
+
+```yaml
+- run: |
+    echo "### テスト結果 :test_tube:" >> "$GITHUB_STEP_SUMMARY"
+    echo "| 成功 | 失敗 |" >> "$GITHUB_STEP_SUMMARY"
+    echo "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+    echo "| 120 | 2 |" >> "$GITHUB_STEP_SUMMARY"
+```
+
+サマリーは実行のサマリーページに表示される Markdown です。各ステップのサマリーは最大 **1 MiB** なので、小さく保ってください。
+
+</TabItem>
+<TabItem label="問題マッチャー">
+
+```yaml
+- run: echo "::add-matcher::.github/matchers/eslint.json"
+- run: npx eslint .
+```
+
+JSON の正規表現ファイルで、ツールの出力を PR の Files changed タブ上の **アノテーション** に変換します。多くの `setup-*` アクションはマッチャーを自動で登録します。
+
+</TabItem>
+<TabItem label="アノテーション">
+
+```bash
+echo "::error file=app.js,line=10,col=5::Missing semicolon"
+echo "::warning::Deprecated input used"
+echo "::notice::Deployed to staging"
+```
+
+</TabItem>
+</Tabs>
+
+<Aside type="tip" title="トークポイント">
+- **ジョブ条件のログ:** ログアーカイブをダウンロードして `JOB-NAME/system.txt` を開きます。`Evaluating`、`Expanded`、`Result` の行を見ると、`if:` が true／false になった理由が正確にわかります。
+- **Copilot:** PR のマージボックス（または実行のサマリーページ）で失敗したチェックから Copilot アイコンをクリックすると、失敗の説明と修正案を示すチャットが開きます。
+- **Actions メトリクス**（Organization の Insights）で、遅いワークフローや失敗の多いワークフローを確認できます。
+</Aside>
+
+## トラブルシューティングの落とし穴
+
+<FlashCards
+  title="トラブルシューティングの落とし穴"
+  cards={[
+    { q: 'ステップのデバッグログを有効にするシークレット／変数は？', a: '`ACTIONS_STEP_DEBUG=true` です。ランナーの診断は `ACTIONS_RUNNER_DEBUG=true` です。' },
+    { q: 'PR にマージコンフリクトがあると `pull_request` ワークフローは実行されますか？', a: 'いいえ。先にコンフリクトを解消してください。' },
+    { q: '`schedule` ワークフローのファイルはどこに置く必要がありますか？', a: '**既定ブランチ** です。' },
+    { q: '`paths` でスキップされたワークフローが必須チェックだとどうなりますか？', a: 'チェックが **保留** のままになり、PR がブロックされます。一方、`if:` でスキップされたジョブは成功を報告します。' },
+    { q: 'パスフィルターが評価する変更ファイルの数は？', a: '最初の **3,000** 個です。それ以降のファイルは考慮されません。' },
+    { q: '`act` は GitHub 公式のツールですか？', a: 'いいえ。コミュニティのプロジェクト（nektos/act）で、便利ですが本物のランナーとは同じではありません。' },
+    { q: 'ジョブはキューでどれだけ待機できますか？', a: '**24時間** で、その後キャンセルされます。' },
+  ]}
+/>
+
+<DocsLinks links={[
+  { label: 'ワークフローのトラブルシューティング', href: 'https://docs.github.com/ja/actions/how-tos/troubleshoot-workflows' },
+  { label: 'デバッグログを有効にする', href: 'https://docs.github.com/ja/actions/how-tos/monitor-workflows/enable-debug-logging' },
+  { label: 'ワークフローとジョブを再実行する', href: 'https://docs.github.com/ja/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs' },
+  { label: '必須ステータスチェックのトラブルシューティング', href: 'https://docs.github.com/ja/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks' },
+  { label: 'GITHUB_TOKEN', href: 'https://docs.github.com/ja/actions/concepts/security/github_token' },
+  { label: 'ワークフローコマンド（アノテーション、ジョブサマリー、マスク）', href: 'https://docs.github.com/ja/actions/reference/workflows-and-actions/workflow-commands' },
+  { label: 'Actions の制限', href: 'https://docs.github.com/ja/actions/reference/limits' },
+  { label: 'セルフホストランナーの監視とトラブルシューティング', href: 'https://docs.github.com/ja/actions/how-tos/manage-runners/self-hosted-runners/monitor-and-troubleshoot' },
+  { label: '問題マッチャー（actions/toolkit、英語）', href: 'https://github.com/actions/toolkit/blob/main/docs/problem-matchers.md' },
+  { label: 'GitHub CLI: gh run（英語）', href: 'https://cli.github.com/manual/gh_run' },
+]} />

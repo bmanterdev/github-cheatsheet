@@ -1,0 +1,291 @@
+---
+title: Troubleshooting
+description: Debug GitHub Actions fast with debug logging, a table of common errors, why workflows don't trigger, gh run CLI commands, job summaries, problem matchers and local testing.
+sidebar:
+  order: 80
+---
+
+import { TLDR, DocsLinks, LastVerified, DecisionTree, FlashCards } from '@components';
+import { Aside, Badge, Tabs, TabItem } from '@astrojs/starlight/components';
+
+<LastVerified date="2026-10" />
+
+<TLDR>
+- **Turn on more logs.** Use **Re-run jobs → Enable debug logging**, or set the secret or variable `ACTIONS_STEP_DEBUG=true` (step logs) and `ACTIONS_RUNNER_DEBUG=true` (runner diagnostics).
+- **Didn't run?** Check whether the workflow is on the default branch (for `schedule` and `issues`), whether path or branch filters matched, whether `[skip ci]` was used, whether the PR has a merge conflict, and whether the event came from **`GITHUB_TOKEN`**, which doesn't trigger new runs.
+- **"Resource not accessible by integration"** means the `GITHUB_TOKEN` is missing a scope. Add it to the `permissions:` block.
+- **Required check stuck on "Expected — Waiting"** usually means a path-filtered workflow never ran.
+- **From the terminal**, `gh run view --log-failed` and `gh run rerun --failed --debug` cover most needs. Copilot can also explain a failed run from the PR merge box.
+</TLDR>
+
+## Common booth questions
+
+<details>
+<summary>How do I get more detailed logs?</summary>
+
+- **Quick:** click **Re-run jobs** and tick **Enable debug logging**. Anyone who can run the workflow can do this.
+- **Persistent:** create the repo secret or variable `ACTIONS_STEP_DEBUG` = `true` for verbose step logs, and `ACTIONS_RUNNER_DEBUG` = `true` for the runner and worker process logs. The runner logs show up in `runner-diagnostic-logs/` in the downloaded log archive. If both a secret and a variable are set, the secret wins.
+- Use `if: runner.debug == '1'` to run extra diagnostic steps only when debug is on.
+
+</details>
+
+<details>
+<summary>My workflow pushed a commit / opened a PR but CI didn't run on it. Bug?</summary>
+
+No, that's by design. Events created with the repo's **`GITHUB_TOKEN`** don't start new workflow runs, which prevents infinite loops. The exceptions are `workflow_dispatch` and `repository_dispatch`. To chain workflows, use a **GitHub App installation token**, call `workflow_dispatch` explicitly, or use `workflow_run`.
+
+</details>
+
+<details>
+<summary>"Resource not accessible by integration" — what does it mean?</summary>
+
+The `GITHUB_TOKEN` (or GitHub App token) doesn't have the permission the API call needs. Add the scope to `permissions:`, for example `pull-requests: write`, `issues: write`, `packages: write` or `id-token: write`. Also check for these causes:
+- The org default is read-only, and any scope you don't list becomes `none` once you declare `permissions:`.
+- The run is a **fork PR** (read-only token) or a Dependabot run.
+- Creating or approving PRs is disabled in the org settings.
+- The token is trying to reach *another* repository. `GITHUB_TOKEN` is scoped to the current repo, so use an App token for cross-repo access.
+
+</details>
+
+<details>
+<summary>The PR says a required check is "Expected — Waiting for status to be reported" forever.</summary>
+
+Usually the workflow was **skipped by `paths` or branch filters**, so its check never reports, and a skipped *workflow* leaves the required check **pending**. A job skipped by an `if:` condition, by contrast, reports **success**. Ways to fix it:
+- Remove the path filter and filter **inside** the job instead, for example with a changed-files step plus `if:`.
+- Add an always-running "gate" job that `needs:` the others, and make *that* job the required check.
+- Make sure the job name or check name in the ruleset matches exactly, including matrix suffixes.
+- For **merge queues**, add the `merge_group` trigger.
+
+</details>
+
+<details>
+<summary>My scheduled workflow stopped running / runs late.</summary>
+
+- `schedule` runs **only from the default branch**. Cron times are in UTC, and runs can be **delayed or dropped at busy times**, especially at the top of the hour, so pick an odd minute.
+- If the workflow's **actor** was suspended, deleted or deprovisioned, the schedule stops. Fix it by committing any change to the `cron` line.
+- In **public** repos, scheduled workflows are disabled automatically after a period of repo inactivity (60 days). Re-enable them in the Actions tab.
+
+</details>
+
+<details>
+<summary>Can I test workflows locally?</summary>
+
+Partly. **[`act`](https://github.com/nektos/act)** is a popular **community tool, not a GitHub product**. It runs jobs in Docker and is good for quick iteration, but its images, contexts, OIDC, caches and service behavior differ from real runners. Other options: `workflow_dispatch` on a branch, a scratch repo, **actionlint** for static checks, and validation in VS Code with the GitHub Actions extension. For hard runner issues, a debug re-run on the real runner is the most reliable.
+
+</details>
+
+<details>
+<summary>The cache never hits.</summary>
+
+Common causes:
+- The key includes something that changes every run, such as `github.sha` or a timestamp.
+- `hashFiles` matched nothing, so the key ends with an empty hash.
+- The runs are on **sibling branches or other PRs**, which can't share caches.
+- The previous job **failed**, so no cache was saved.
+- The cache was **evicted** after 7 days without access or because of the size limit.
+- `path` differs between save and restore, which changes the cache *version*.
+- The run uses a **low-trust trigger** with read-only cache access, so the save was skipped with a warning.
+
+Check the `cache-hit` output and **Actions → Caches**.
+
+</details>
+
+<details>
+<summary>Self-hosted runner shows "Offline" / jobs stuck in "Queued".</summary>
+
+- Check the runner service and its outbound HTTPS access to GitHub, including proxy settings and TLS inspection.
+- Check that the runner version is current. Outdated runners stop receiving jobs.
+- Check that the job's `runs-on` labels match exactly. Avoid custom labels that collide with GitHub-hosted labels.
+- Check that the **runner group** allows the repo or workflow.
+- Jobs stay queued for at most **24 hours** before they are cancelled.
+
+For ARC, check the listener and controller pods. Use `ACTIONS_RUNNER_DEBUG` to get runner logs.
+
+</details>
+
+## Decision: my workflow didn't run — why?
+
+<DecisionTree
+  title="My workflow didn't run — why?"
+  tree={{
+    start: 'q1',
+    nodes: {
+      q1: {
+        question: 'Does the run appear in the **Actions** tab at all (even as skipped, queued or failed)?',
+        options: [
+          { label: 'No run at all', next: 'q2' },
+          { label: 'Queued forever', next: 'queued' },
+          { label: 'Shows a startup or policy error', next: 'policy' },
+        ],
+      },
+      q2: {
+        question: 'Is the workflow **enabled**, and is the YAML valid? Check the Actions tab for a "workflow file issue" banner.',
+        options: [
+          { label: 'Disabled or invalid', next: 'disabled' },
+          { label: 'Enabled and valid', next: 'q3' },
+        ],
+      },
+      disabled: {
+        answer: 'Re-enable it, or fix the YAML. Also check that Actions is allowed for the repo or org, and that the file is under **500 KB**. Scheduled workflows in public repos are auto-disabled after 60 days of inactivity.',
+        links: [{ label: 'Disable and enable workflows', href: 'https://docs.github.com/en/actions/how-tos/manage-workflow-runs/disable-and-enable-workflows' }],
+      },
+      q3: {
+        question: 'Was the triggering event caused by a workflow using **`GITHUB_TOKEN`** (a push, PR or comment made by a bot step)?',
+        options: [
+          { label: 'Yes', next: 'token' },
+          { label: 'No', next: 'q4' },
+        ],
+      },
+      token: {
+        answer: 'That is **by design**: `GITHUB_TOKEN` events don\'t trigger new runs, except `workflow_dispatch` and `repository_dispatch`. Use a **GitHub App token** or explicit dispatch.',
+        links: [{ label: 'GITHUB_TOKEN', href: 'https://docs.github.com/en/actions/concepts/security/github_token' }],
+      },
+      q4: {
+        question: 'Which event?',
+        options: [
+          { label: 'schedule / issues / other default-branch-only events', next: 'defbranch' },
+          { label: 'pull_request', next: 'q5' },
+          { label: 'push', next: 'q6' },
+        ],
+      },
+      defbranch: {
+        answer: 'These events run **only from the workflow file on the default branch**. Merge the file first. For `schedule`, also check UTC time, load delays, and whether the actor account is still active.',
+      },
+      q5: {
+        question: 'Does the PR have a **merge conflict**, or come from a **fork / first-time contributor**?',
+        options: [
+          { label: 'Merge conflict', next: 'conflict' },
+          { label: 'Fork / first-time contributor', next: 'approval' },
+          { label: 'Neither', next: 'q6' },
+        ],
+      },
+      conflict: { answer: '`pull_request` workflows **don\'t run while the PR has a merge conflict**. Resolve it and push.' },
+      approval: {
+        answer: 'Runs may be **waiting for approval** (a maintainer clicks "Approve and run"). In private repos, the org or repo must also allow fork PR workflows.',
+      },
+      q6: {
+        question: 'Do `branches`, `tags` or `paths` filters exclude this change, or does the commit message contain `[skip ci]`?',
+        options: [
+          { label: 'Yes / maybe', next: 'filters' },
+          { label: 'No', next: 'q7' },
+        ],
+      },
+      filters: {
+        answer: 'Filtered runs are **not created**. Note that path filters only evaluate the **first 3,000 changed files**. If this workflow is a required check, the PR will wait forever, so use an in-job filter or a gate job instead.',
+        links: [{ label: 'Filter pattern cheat sheet', href: 'https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#filter-pattern-cheat-sheet' }],
+      },
+      q7: {
+        answer: 'Check for an **Actions event or actor policy** that blocks the trigger or user, a hit on the **trigger rate limit** (1,500 events per 10 s per repo), or webhook delivery problems. Then re-check `on:` against the event docs.',
+        links: [{ label: 'Troubleshooting workflows', href: 'https://docs.github.com/en/actions/how-tos/troubleshoot-workflows' }],
+      },
+      queued: {
+        answer: 'No runner picked up the job. Check that the `runs-on` labels match an online runner, that the **runner group** allows this repo or workflow, and that you haven\'t hit a **concurrency limit** or `concurrency:` group. For larger runners, also check billing and the payment method. Jobs are cancelled after **24 h** in the queue.',
+      },
+      policy: {
+        answer: 'Read the error. Typical causes are an action that isn\'t allowed by policy, an action not pinned to a SHA when pinning is required, a disallowed event under an Actions policy (for example `pull_request_target`), or a billing or spending limit being reached.',
+        links: [{ label: 'About Actions policies', href: 'https://docs.github.com/en/actions/concepts/about-actions-policies' }],
+      },
+    },
+  }}
+/>
+
+## Common errors
+
+| Symptom / message | Likely cause | Fix |
+| --- | --- | --- |
+| `Resource not accessible by integration` (HTTP 403) | `GITHUB_TOKEN` is missing a scope, the run is a fork PR, or the call is cross-repo | Add the scope to `permissions:`, or use a GitHub App token |
+| A push or PR created by a workflow doesn't trigger CI | Events created with `GITHUB_TOKEN` don't create runs | Use a GitHub App token or `workflow_dispatch` |
+| Required check "Expected — Waiting for status" | The workflow was skipped by path or branch filters, or the check name doesn't match | Use a gate job or in-job filtering. Make the names match exactly |
+| `API rate limit exceeded` | `GITHUB_TOKEN` allows **1,000 requests/hour/repo** (15,000 on Enterprise Cloud), plus secondary limits | Batch calls, add caching or back-off, or use an App token |
+| Cache miss every time | Volatile key, wrong scope, eviction, failed job, or read-only trigger | See the cache answer above |
+| Self-hosted runner "Offline" | Service stopped, network or proxy problem, outdated runner | Restart the service, check egress, update the runner |
+| Job stuck in "Queued" | No matching label, runner group restriction, concurrency limit | Fix the labels or group access, check limits |
+| `The job was not started because recent account payments have failed or your spending limit needs to be increased` | Billing or budget | Fix the payment method or adjust the budget |
+| `Event '…' is not allowed to trigger Actions workflows` | Actions policy (event or actor rule) | Change the trigger or update the policy |
+| Job can't be cancelled | `if: always()` keeps it running | Use `if: ${{ !cancelled() }}`, or the force-cancel API |
+| `Error: Process completed with exit code 1` and nothing else | The tool's own failure | Read the lines above it, enable the tool's verbose flag, or re-run with debug |
+
+## `gh` CLI cheat sheet
+
+```bash
+gh run list --workflow ci.yml --branch main --limit 10   # recent runs
+gh run watch                                             # live-follow a run
+gh run view <run-id> --log-failed                        # only failed step logs
+gh run view <run-id> --job <job-id> --log                # full job log
+gh run rerun <run-id> --failed --debug                   # re-run failed jobs with debug logging
+gh run download <run-id> -n my-artifact                  # get artifacts
+gh workflow run deploy.yml -f env=staging --ref my-branch  # trigger workflow_dispatch
+gh workflow enable|disable ci.yml
+gh cache list && gh cache delete <key>                   # inspect / purge caches
+```
+
+## Make failures obvious: job summaries and problem matchers
+
+<Tabs>
+<TabItem label="Job summary">
+
+```yaml
+- run: |
+    echo "### Test results :test_tube:" >> "$GITHUB_STEP_SUMMARY"
+    echo "| Passed | Failed |" >> "$GITHUB_STEP_SUMMARY"
+    echo "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+    echo "| 120 | 2 |" >> "$GITHUB_STEP_SUMMARY"
+```
+
+The summary is Markdown that appears on the run's summary page. Keep it small, because each step's summary is capped at **1 MiB**.
+
+</TabItem>
+<TabItem label="Problem matcher">
+
+```yaml
+- run: echo "::add-matcher::.github/matchers/eslint.json"
+- run: npx eslint .
+```
+
+A JSON regex file turns tool output into **annotations** on the PR's Files changed tab. Many `setup-*` actions register matchers automatically.
+
+</TabItem>
+<TabItem label="Annotations">
+
+```bash
+echo "::error file=app.js,line=10,col=5::Missing semicolon"
+echo "::warning::Deprecated input used"
+echo "::notice::Deployed to staging"
+```
+
+</TabItem>
+</Tabs>
+
+<Aside type="tip" title="Talking points">
+- **Job condition logs:** download the log archive and open `JOB-NAME/system.txt`. The `Evaluating`, `Expanded` and `Result` lines show exactly why an `if:` was true or false.
+- **Copilot:** from a failed check in the PR merge box (or the run summary page), click the Copilot icon to open a chat that explains the failure and suggests a fix.
+- **Actions metrics** (org Insights) show the slowest and most-failing workflows.
+</Aside>
+
+## Troubleshooting gotchas
+
+<FlashCards
+  title="Troubleshooting gotchas"
+  cards={[
+    { q: 'Which secret/variable enables step debug logs?', a: '`ACTIONS_STEP_DEBUG=true`. Runner diagnostics use `ACTIONS_RUNNER_DEBUG=true`.' },
+    { q: 'Do `pull_request` workflows run if the PR has a merge conflict?', a: 'No. Resolve the conflict first.' },
+    { q: 'Where must a `schedule` workflow file live?', a: 'On the **default branch**.' },
+    { q: 'A workflow is skipped by `paths`, but it is a required check. What happens?', a: 'The check stays **pending** and the PR is blocked. A job skipped via `if:` reports success instead.' },
+    { q: 'How many changed files do path filters evaluate?', a: 'The first **3,000**. Files beyond that are not considered.' },
+    { q: 'Is `act` an official GitHub tool?', a: 'No. It is a community project (nektos/act), useful but not identical to real runners.' },
+    { q: 'How long can a job wait in the queue?', a: '**24 hours**, then it is cancelled.' },
+  ]}
+/>
+
+<DocsLinks links={[
+  { label: 'Troubleshooting workflows', href: 'https://docs.github.com/en/actions/how-tos/troubleshoot-workflows' },
+  { label: 'Enabling debug logging', href: 'https://docs.github.com/en/actions/how-tos/monitor-workflows/enable-debug-logging' },
+  { label: 'Re-running workflows and jobs', href: 'https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs' },
+  { label: 'Troubleshooting required status checks', href: 'https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks' },
+  { label: 'GITHUB_TOKEN', href: 'https://docs.github.com/en/actions/concepts/security/github_token' },
+  { label: 'Workflow commands (annotations, job summaries, masking)', href: 'https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands' },
+  { label: 'Actions limits', href: 'https://docs.github.com/en/actions/reference/limits' },
+  { label: 'Monitoring and troubleshooting self-hosted runners', href: 'https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/monitor-and-troubleshoot' },
+  { label: 'Problem matchers (actions/toolkit)', href: 'https://github.com/actions/toolkit/blob/main/docs/problem-matchers.md' },
+  { label: 'GitHub CLI: gh run', href: 'https://cli.github.com/manual/gh_run' },
+]} />

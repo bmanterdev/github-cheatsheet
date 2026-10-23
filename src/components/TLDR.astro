@@ -1,0 +1,45 @@
+---
+/**
+ * <TLDR> — highlighted summary callout. Put 1–3 short bullets / sentences in the slot.
+ *   <TLDR>Short answer here.</TLDR>
+ *   <TLDR heading="要点">…</TLDR>
+ */
+import { labelsFor, resolveLang } from './i18n';
+
+interface Props {
+	heading?: string;
+	lang?: 'en' | 'ja';
+}
+const { heading, lang } = Astro.props;
+const t = labelsFor(resolveLang(lang, Astro.currentLocale));
+const title = heading ?? t.tldr;
+---
+
+<aside class="gh-tldr" aria-label={title}>
+	<p class="gh-tldr__title"><span aria-hidden="true">⚡</span> {title}</p>
+	<div class="gh-tldr__body"><slot /></div>
+</aside>
+
+<style>
+	.gh-tldr {
+		margin-top: 1rem;
+		padding: 0.85rem 1.1rem;
+		border: 1px solid var(--gh-tldr-border);
+		border-inline-start-width: 4px;
+		border-radius: 0.5rem;
+		background: var(--gh-tldr-bg);
+		color: var(--sl-color-white);
+	}
+	.gh-tldr__title {
+		margin: 0 0 0.35rem;
+		font-weight: 700;
+		letter-spacing: 0.02em;
+		color: var(--gh-done);
+	}
+	.gh-tldr__body :global(> :first-child) {
+		margin-top: 0;
+	}
+	.gh-tldr__body :global(ul) {
+		padding-inline-start: 1.1rem;
+	}
+</style>

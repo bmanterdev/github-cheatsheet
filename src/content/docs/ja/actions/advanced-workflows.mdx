@@ -1,0 +1,613 @@
+---
+title: 高度なワークフローパターン
+description: reusable workflow と composite action の比較、動的マトリックス、concurrency、環境と保護ルール、ワークフローの連鎖、パスフィルターと必須チェック、マージキュー、モノレポ、条件、サービスコンテナ、YAML アンカー。
+sidebar:
+  order: 30
+---
+
+import { Aside, Badge, Tabs, TabItem } from '@astrojs/starlight/components';
+import { TLDR, DocsLinks, LastVerified, CompareTable, FlashCards } from '@components';
+
+<LastVerified date="2026-10" />
+
+<TLDR>
+- **パイプライン全体**（ジョブ、ランナー、環境、シークレット）を共有するなら **reusable workflow**（`workflow_call`）、**いくつかのステップ**を共有するなら **composite action** を使います。
+- マトリックスを**動的**にするには、前段のジョブで JSON を出力し、`fromJSON(needs.plan.outputs.matrix)` で読み込みます。上限は 1 実行あたり 256 ジョブです。
+- concurrency: PR では PR ごとに `cancel-in-progress: true`、デプロイでは環境ごとに**キャンセルしない**設定にします。`queue: max` を使うと、最大 100 件の保留中の実行を順番どおりに保持できます。
+- **パスやブランチのフィルターで一度も実行されないワークフローは、必須チェックを永遠に「Pending」のままにします。** 代わりにジョブレベルの `if:` か、常に実行される集約ジョブを使ってください。
+- マージキューは、必須ワークフローが **`on: merge_group`** もリッスンしている場合にのみ機能します。
+</TLDR>
+
+## ブースでよくある質問
+
+<details>
+<summary>reusable workflow と composite action、どちらを使うべきですか？</summary>
+
+複数のジョブ、独自の `runs-on`、承認付きの環境、シークレットが必要なら **reusable workflow** を使います。チームが呼び出せても
+変更はできない**中央管理のパイプライン**が欲しい場合（SLSA Build L3 の来歴や、ランナーグループで固定したデプロイなど）にも適しています。
+「ツールチェーンのセットアップ + キャッシュ + ログイン」のように、呼び出し元ジョブの*中で*実行するステップをまとめるなら
+**composite action** を使います。多くの組織では、composite action を呼び出す reusable workflow という形で両方を併用しています。
+[比較表](#reusable-workflow-と-composite-action-の比較)を参照してください。
+
+</details>
+
+<details>
+<summary>reusable workflow は何階層までネストできますか？呼び出せる数に上限はありますか？</summary>
+
+最大 **10 階層**（呼び出し元 + ネスト 9 階層）までネストできます。1 つのトップレベルのワークフローファイルから参照できるユニークな reusable workflow は
+最大 **50 個**で、ネストされたツリーも数に含まれます。composite action は、1 つのワークフロー内で最大 10 個までネストできます。
+`GITHUB_TOKEN` の権限は、チェーンを下るにつれて同じか、より**狭く**することしかできません。
+
+</details>
+
+<details>
+<summary>必須チェックが「Expected — Waiting for status to be reported」のまま進まないのはなぜですか？</summary>
+
+ワークフローが **`paths`、`branches`、またはコミットメッセージのフィルターでスキップされた**ため、ステータスが一度も報告されず、
+チェックが Pending のままになっています。一方、`if:` でスキップされた**ジョブ**は **Success** を報告します。対策は、ワークフロー自体は
+毎回実行してその中でジョブをスキップするか、常に実行される集約ジョブ 1 つを必須チェックにすることです。
+[パスフィルターと必須チェック](#パスフィルターと必須チェック)を参照してください。
+
+</details>
+
+<details>
+<summary>モノレポで変更されたサービスだけをビルドするには？</summary>
+
+ベース SHA との差分を取り、変更されたパッケージの JSON リストを出力する「plan」ジョブを追加します。そのリストを `fromJSON` で
+**動的マトリックス**に渡し、リストが空のときに失敗せずスキップされるよう `if:` でガードします。
+[モノレポパターン](#モノレポパターン-変更分だけビルド)を参照してください。
+
+</details>
+
+<details>
+<summary>ServiceNow の変更チケットや Datadog のヘルスチェックを待ってからデプロイできますか？</summary>
+
+できます。**カスタムデプロイ保護ルール** <Badge text="パブリックプレビュー" variant="caution" /> を使います。これは
+`deployment_protection_rule` Webhook を受け取り、API でジョブを承認または却下する GitHub App です。保護ルールは環境ごとに最大 6 個まで設定できます。
+必須レビュー担当者と待機タイマーは組み込みのルールです。**プライベート**リポジトリでこの 2 つを使うには GitHub Enterprise が必要です。
+
+</details>
+
+<details>
+<summary>ワークフロー A の後にワークフロー B を連鎖実行するには？</summary>
+
+方法は 3 つあります。
+
+1. **reusable workflow**。`jobs.x.uses:` を使うと、1 つの実行・1 つのログで出力も受け取れます。これが最善の方法です。
+2. **`workflow_run`**。A の完了時に B がトリガーされます。B はデフォルトブランチのコンテキストで**シークレット付き**で実行されるため、A がフォークの PR で実行された場合は注意が必要です。連鎖は最大 3 階層までです。
+3. GitHub App トークンを使い、API 経由で **`repository_dispatch`** または **`workflow_dispatch`** を呼び出します。リポジトリをまたいで使えます。
+
+[ワークフローの連鎖](#ワークフローの連鎖)を参照してください。
+
+</details>
+
+<details>
+<summary>Actions で YAML アンカーは使えるようになりましたか？</summary>
+
+はい。アンカー（`&name`）とエイリアス（`*name`）は公式にサポートされ、ドキュメント化されています。たとえば `env:` ブロックやジョブ全体を再利用できます。
+マージキー（`<<:`）はドキュメントに記載がないため、使わないでください。
+
+</details>
+
+<details>
+<summary>フォークからの PR でキャッシュを汚染されることはありますか？</summary>
+
+現在はより安全なデフォルトになっています。`pull_request_target`、`issue_comment`、`workflow_run` などの信頼度の低いトリガーは、
+デフォルトブランチのキャッシュに**読み取り専用**でしかアクセスできません。新しい `jobs.<id>.cache-mode`（`read` / `write` / `write-only` / `none`）で
+明示的に制御することもできます。信頼度の低いトリガーで `write` を設定しないでください。
+
+</details>
+
+## reusable workflow と composite action の比較
+
+<CompareTable
+	title="reusable workflow と composite action"
+	columns={[
+		{ key: 'rw', label: 'reusable workflow' },
+		{ key: 'ca', label: 'composite action' },
+	]}
+	rows={[
+		{ feature: '定義場所', category: '構造', values: { rw: '`on: workflow_call` を持つ `.github/workflows/*.yml`', ca: '`runs: using: composite` を持つ `action.yml`' } },
+		{ feature: '呼び出し元', category: '構造', values: { rw: '**ジョブ**（`jobs.<id>.uses`）', ca: '**ステップ**（`steps[].uses`）' } },
+		{ feature: '複数ジョブを含められる', category: '構造', values: { rw: true, ca: false } },
+		{ feature: '独自にランナーを選べる', category: '構造', values: { rw: true, ca: 'いいえ — 呼び出し元ジョブのランナーで実行' } },
+		{ feature: '環境 / 承認', category: '機能', values: { rw: true, ca: false } },
+		{ feature: 'シークレット', category: '機能', values: { rw: '`secrets:` または `secrets: inherit`', ca: '`with:` の入力 / env 経由のみ' } },
+		{ feature: '出力', category: '機能', values: { rw: 'ジョブレベルの出力を呼び出し元へ', ca: 'ステップの出力' } },
+		{ feature: '同じジョブ内で後続ステップを追加', category: '機能', values: { rw: false, ca: true } },
+		{ feature: 'ログ', category: '運用', values: { rw: 'ジョブとステップごとに個別', ca: '1 ステップに折りたたみ' } },
+		{ feature: 'ネスト上限', category: '運用', values: { rw: '10 階層、1 ファイルあたりユニーク 50 個', ca: '1 ワークフローで最大 10 個' } },
+		{ feature: 'Marketplace に公開', category: '運用', values: { rw: false, ca: true } },
+		{ feature: '呼び出し元の `env:` の引き継ぎ', category: '注意点', values: { rw: 'されない — inputs か `vars` を使う', ca: 'される（同じジョブで実行）' } },
+	]}
+/>
+
+<Tabs>
+<TabItem label="呼び出される側 (reusable)">
+
+```yaml
+# my-org/platform/.github/workflows/deploy.yml
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+    secrets:
+      DEPLOY_KEY:
+        required: false
+    outputs:
+      url:
+        description: デプロイ先 URL
+        value: ${{ jobs.deploy.outputs.url }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      url: ${{ steps.d.outputs.url }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: d
+        run: echo "url=https://${{ inputs.environment }}.example.com" >> "$GITHUB_OUTPUT"
+```
+
+</TabItem>
+<TabItem label="呼び出し側">
+
+```yaml
+jobs:
+  deploy:
+    uses: my-org/platform/.github/workflows/deploy.yml@v3   # タグ、ブランチ、SHA
+    with:
+      environment: staging
+    secrets: inherit          # 同じ Organization/エンタープライズ内のみ。明示的なマッピングも可
+    permissions:
+      contents: read
+      id-token: write
+
+  smoke-test:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsS "${{ needs.deploy.outputs.url }}/health"
+```
+
+</TabItem>
+<TabItem label="composite action">
+
+```yaml
+# my-org/actions/setup-toolchain/action.yml
+name: Setup toolchain
+inputs:
+  node-version:
+    default: '22'
+outputs:
+  cache-hit:
+    value: ${{ steps.node.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - id: node
+      uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+    - run: npm ci
+      shell: bash          # composite action の run ステップでは shell が必須
+```
+
+</TabItem>
+<TabItem label="注意点">
+
+- reusable workflow を呼び出すジョブで使えるのは、`name`、`uses`、`with`、`secrets`、`strategy`、`needs`、`if`、`concurrency`、`permissions`、`cache-mode` だけです。`runs-on`、`steps`、`env` は使えません。
+- **呼び出し元の `env:` は引き継がれません。** `inputs` か、Organization/リポジトリの `vars` を使ってください。
+- 呼び出される側の `github` コンテキストは**呼び出し元**のものです。`github.workflow` は呼び出し元の名前になり、concurrency グループに影響します（後述）。
+- OIDC では `job_workflow_ref` で reusable workflow を識別できます。クラウド側の信頼ポリシーで、**中央のデプロイワークフローだけ**がロールを引き受けられるようにできます。
+- *失敗した*ジョブを再実行すると、reusable workflow は初回と**同じ SHA** から解決されます。*すべての*ジョブを再実行すると、ref が再解決されます。
+- SHA ピン留めを必須にする Organization ポリシーはアクションに適用されます。**reusable workflow は対象外**で、引き続きタグを使えます。
+
+</TabItem>
+</Tabs>
+
+## マトリックス戦略
+
+### include/exclude を使った静的マトリックス
+
+```yaml
+strategy:
+  fail-fast: false          # デフォルトは true: 1 つ失敗すると残りをキャンセル
+  max-parallel: 4           # 同時実行数を制限（共有テスト DB / ライセンス上限など）
+  matrix:
+    os: [ubuntu-latest, windows-latest, macos-latest]
+    node: [20, 22, 24]
+    exclude:
+      - os: macos-latest
+        node: 20
+    include:
+      - os: ubuntu-24.04-arm   # 単発の組み合わせを追加
+        node: 24
+      - node: 24               # 既存の組み合わせにキーを追加
+        experimental: true
+continue-on-error: ${{ matrix.experimental == true }}
+```
+
+- **ユースケース:** OS やバージョンをまたいだテストグリッド。
+- **注意点:** 既存の組み合わせに一致する `include` エントリは、その組み合わせに新しいキーを**追加**します。一致しないエントリは新しいジョブを作成します。元のマトリックスの値は上書きできませんが、追加した値は上書きできます。
+- **上限:** 1 ワークフロー実行あたり 256 ジョブです。サポートに依頼しても引き上げられません。
+
+### 前段ジョブからの動的マトリックス
+
+```yaml
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        run: echo 'matrix={"include":[{"svc":"api","dir":"services/api"},{"svc":"web","dir":"apps/web"}]}' >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - run: echo "Building ${{ matrix.svc }} in ${{ matrix.dir }}"
+```
+
+- **注意点:** マトリックスが**空**だとワークフローが失敗します。リストが空かどうかを確認する `if:` でジョブをガードしてください（後述のモノレポパターンを参照）。
+- **注意点:** 出力文字列は 1 行の有効な JSON でなければなりません。`jq -c` で組み立ててください。
+
+## concurrency のパターン
+
+<Tabs>
+<TabItem label="PR ごと（古い実行をキャンセル）">
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+```
+
+**ユースケース:** PR に新しく push すると、古くなった実行がキャンセルされます。忙しいリポジトリでは最大のコスト削減策です。
+
+</TabItem>
+<TabItem label="環境ごと（キャンセルしない）">
+
+```yaml
+jobs:
+  deploy:
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false   # デプロイを途中で止めない
+```
+
+**ユースケース:** デプロイを直列化します。**注意点:** デフォルトでは*保留中*にできる実行は **1 件**だけです。新しい保留中の実行が
+古い保留中の実行を置き換えるため、途中のコミットはスキップされます。デプロイでは通常これが望ましい動作です。
+
+</TabItem>
+<TabItem label="すべてキューに入れる">
+
+```yaml
+concurrency:
+  group: production-deploy
+  queue: max          # 最大 100 件を保留、FIFO
+```
+
+**ユースケース:** DB マイグレーションやリリーストレインなど、すべての実行を順番どおりに処理する必要がある場合。
+**注意点:** `queue: max` と `cancel-in-progress: true` を組み合わせると検証エラーになります。
+
+</TabItem>
+<TabItem label="条件付きキャンセル">
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+```
+
+**ユースケース:** PR の古い実行はキャンセルしつつ、`main` での実行はすべて最後まで完了させます。
+
+</TabItem>
+</Tabs>
+
+<Aside type="caution" title="reusable workflow の落とし穴">
+呼び出される側から見た `github.workflow` は**呼び出し元**の名前です。呼び出し元と呼び出される側の両方で
+`cancel-in-progress: true` とともに `group: ${{ github.workflow }}-${{ github.ref }}` を使うと、呼び出される側が**自分の呼び出し元をキャンセル**
+してしまいます。呼び出される側では `-deploy` のようなサフィックスを付けてください。グループ名は大文字と小文字を区別しません。
+</Aside>
+
+## 環境とデプロイ保護ルール
+
+```yaml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - id: deploy
+        run: ./deploy.sh   # 環境シークレットはすべてのルールを通過した後にのみ渡される
+```
+
+| ルール | 内容 | 備考 |
+| --- | --- | --- |
+| 必須レビュー担当者 | 最大 6 ユーザー/チーム。承認は 1 件で足ります。オプションで**自己レビューを禁止**できます。 | プライベートリポジトリでは Enterprise が必要です。 |
+| 待機タイマー | 1〜43,200 分（30 日）。 | 課金対象の時間には含まれません。プライベートリポジトリでは Enterprise が必要です。 |
+| デプロイブランチ/タグ | `main` や `release/*` だけがデプロイできるようにします。 | プライベートリポジトリでも Pro と Team で利用できます。 |
+| カスタム保護ルール <Badge text="プレビュー" variant="caution" /> | GitHub App（ServiceNow、Datadog、Honeycomb、New Relic、または自作）が承認・却下します。 | 環境ごとに合計 6 ルールまで。 |
+| 管理者バイパスの切り替え | 管理者によるバイパスを禁止します。 | |
+
+- **トークポイント:** 環境にスコープした OIDC サブジェクト（`repo:org/repo:environment:production`）を使えば、承認を通過した後で**しか**クラウドのロールを引き受けられなくなります。
+- **注意点:** 承認待ちは最大 **30 日**です。ワークフロー実行全体の上限は 35 日です。
+
+```mermaid
+sequenceDiagram
+    participant WF as "ワークフロージョブ (environment: production)"
+    participant GH as "GitHub"
+    participant App as "カスタムルール App (例: ServiceNow)"
+    participant Rev as "必須レビュー担当者"
+    WF->>GH: ジョブが環境を要求
+    GH->>App: deployment_protection_rule Webhook
+    GH->>Rev: レビューを依頼
+    App-->>GH: 承認 (API コールバック)
+    Rev-->>GH: 承認
+    GH->>WF: 環境シークレットを渡してジョブ開始
+```
+
+## ワークフローの連鎖
+
+```mermaid
+flowchart LR
+    U["人 / API"] -- "workflow_dispatch (inputs)" --> CI["CI ワークフロー"]
+    EXT["外部システム"] -- "repository_dispatch (client_payload)" --> CI
+    CI -- "jobs.x.uses (workflow_call)" --> RW["reusable なデプロイワークフロー"]
+    CI -- "完了" --> WR["CI 後のワークフロー (on: workflow_run)"]
+```
+
+| トリガー | ユースケース | 注意点 |
+| --- | --- | --- |
+| `workflow_call` | 1 つの実行・1 つのログで、出力とシークレットを扱える共有パイプライン。 | 10 階層まで、1 ファイルあたりユニーク 50 個まで。 |
+| `workflow_run` | 信頼できない CI 実行の後に、特権が必要な後続処理（フォーク PR へのコメント、レポートの公開など）を実行する。 | 連鎖は最大 **3 階層**です。ワークフローはデフォルトブランチ上にある必要があります。シークレットと書き込み可能なトークンを持つため、この中で**PR のコードをチェックアウトして実行してはいけません**。 |
+| `workflow_dispatch` | 型付き入力（`string`、`boolean`、`choice`、`number`、`environment`）を使う手動または API からの実行。 | トップレベルの入力は最大 25 個、ペイロードは最大 65,535 文字です。UI に表示するには、ワークフローがデフォルトブランチ上にある必要があります。 |
+| `repository_dispatch` | リポジトリ間や外部システムからのトリガー（`POST /repos/{owner}/{repo}/dispatches`）。 | `client_payload` のトップレベルプロパティは最大 10 個です。デフォルトブランチでのみ実行されます。 |
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: environment      # リポジトリの環境をドロップダウンで選択
+        required: true
+      dry-run:
+        type: boolean
+        default: true
+      log-level:
+        type: choice
+        options: [info, debug]
+  repository_dispatch:
+    types: [deploy-requested]
+```
+
+<Aside type="note">
+`GITHUB_TOKEN` では*新しい*ワークフローをトリガーできません。例外は `workflow_dispatch` と `repository_dispatch` です。リポジトリをまたいで
+連鎖させる場合は、PAT ではなく **GitHub App のインストールトークン**（`actions/create-github-app-token` などで取得）を使ってください。
+</Aside>
+
+## パスフィルターと必須チェック
+
+**落とし穴:** `on: pull_request: paths: ['src/**']` を設定したワークフローが**必須**チェックになっているとします。ドキュメントだけを
+変更する PR ではワークフローが実行されず、チェックは **Pending** のままになり、PR をマージできません。
+
+```mermaid
+flowchart TD
+    PR["docs/ のみを変更する PR"] --> F{"ワークフローレベルの paths フィルター?"}
+    F -- "あり" --> P["ワークフローが実行されず Pending のまま、PR はブロック"]
+    F -- "なし" --> J{"ジョブレベルの if: でスキップ?"}
+    J -- "はい" --> S["ジョブは Success を報告、PR はマージ可能"]
+    J -- "いいえ" --> R["ジョブは通常どおり実行"]
+```
+
+対策は、**常に実行される集約ジョブ**です。`ci-ok` **だけ**を必須チェックにします。
+
+```yaml
+on: [pull_request, merge_group]
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      src: ${{ steps.f.outputs.src }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: f
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          if git diff --name-only "$BASE" HEAD | grep -q '^src/'; then
+            echo "src=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "src=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.src == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: make test
+
+  ci-ok:
+    if: always()                 # 依存ジョブが失敗・スキップされても必ず実行
+    needs: [changes, test]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+```
+
+- **注意点:** `if: always()` がないと、上流が失敗したときに `ci-ok` が**スキップ**されます。スキップされたジョブは **Success** を報告するため、壊れた PR がマージできてしまいます。
+- **注意点:** 必須ステータスチェックは**ジョブ名**（チェック実行名）で照合されます。ジョブ名を変更したら、ルールセットやブランチ保護も更新する必要があります。
+
+## マージキュー
+
+```yaml
+on:
+  pull_request:
+  merge_group:            # 必須。ないとキューがチェックを永遠に待ち続ける
+    types: [checks_requested]
+```
+
+- **ユースケース:** 変更の多い `main` ブランチ。キューは**その PR とキューで先行するすべての変更**を合わせてテストしてからマージするため、「PR はグリーンなのに main がレッド」という状態を防げます。
+- ブランチ保護またはルールセットの **Require merge queue** で有効にします。
+- **注意点:** `merge_group` イベントでの `github.ref` は、一時的な `gh-readonly-queue/...` ブランチです。差分は `github.event.merge_group.base_sha` に対して取ってください。
+- **注意点:** `merge_group` でワークフローをスキップするブランチ/パスフィルターも、前述と同じ Pending の問題を引き起こします。
+
+## モノレポパターン: 変更分だけビルド
+
+```yaml
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.s.outputs.services }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: s
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          svcs=$(git diff --name-only "$BASE" HEAD -- services/ \
+                 | cut -d/ -f2 | sort -u | jq -R . | jq -cs .)
+          echo "services=$svcs" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.services != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.plan.outputs.services) }}
+    uses: ./.github/workflows/build-service.yml     # サービスごとの reusable workflow
+    with:
+      service: ${{ matrix.service }}
+```
+
+- **トークポイント:** 集約ジョブによる必須チェック（前述）、サービスごとの `concurrency` グループ、`hashFiles('services/<svc>/package-lock.json')` でスコープしたキャッシュキーと組み合わせます。
+- 変更検出用のサードパーティ製アクションもありますが、他のアクションと同様にレビューし、SHA でピン留めしてください。
+
+## 条件付きジョブとステータス関数
+
+| 式 | 実行される条件 |
+| --- | --- |
+| *（なし）* = `success()` | 前のステップまたは `needs` がすべて成功したとき。 |
+| `always()` | 常に実行。**実行がキャンセルされた場合も含みます**。 |
+| `!cancelled()` | キャンセルされた場合を除いて常に実行。「常に実行」と言うとき、通常はこちらを意図しています。 |
+| `failure()` | 前のステップまたは依存ジョブが失敗したとき。通知やロールバックに使います。 |
+| `cancelled()` | 実行がキャンセルされたとき。 |
+
+```yaml
+- name: Notify on failure
+  if: ${{ failure() && github.ref == 'refs/heads/main' }}
+  run: ./notify-slack.sh
+```
+
+- **注意点:** `!` で始まる式は `if: ${{ !cancelled() }}` のように囲む必要があります。素の `!` は YAML のタグとして解釈されます。
+- **注意点:** `if:` の中で `secrets.*` を直接参照することはできません。ジョブレベルの `env:` にマッピングしてから `env.MY_SECRET != ''` で判定してください。
+
+## ジョブコンテナとサービスコンテナ
+
+```yaml
+jobs:
+  integration:
+    runs-on: ubuntu-latest        # container/services は Linux ランナーのみ
+    container: node:22            # すべての run ステップがこのイメージ内で実行される
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: npm ci && npm run test:integration
+        env:
+          DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+```
+
+- **注意点:** ジョブを**コンテナ内で**実行する場合、サービスには**ラベルをホスト名として**アクセスします（`postgres:5432`）。ジョブをランナー上で直接実行する場合は、`ports:` をマッピングして `localhost` を使います。
+- **注意点:** コンテナジョブとサービスコンテナには、Docker が使える **Linux** ランナーが必要です。ARC では `dind` か Kubernetes のコンテナモードを使います。
+
+## YAML アンカー
+
+```yaml
+jobs:
+  test: &base_job
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: npm test
+  test-nightly: *base_job          # ジョブをそのまま複製
+
+  lint:
+    env: &common_env
+      NODE_ENV: ci
+      FORCE_COLOR: '1'
+    runs-on: ubuntu-latest
+    steps: [{ run: npm run lint }]
+  build:
+    env: *common_env
+    runs-on: ubuntu-latest
+    steps: [{ run: npm run build }]
+```
+
+- **ユースケース:** **1 ファイル内**での重複排除。ファイルやリポジトリをまたいで再利用するなら、reusable workflow か composite action を使います。
+- **注意点:** エイリアスは内容をそのままコピーします。一部を上書きするためのマージキー（`<<:`）はドキュメントに記載がないため、使わないでください。
+
+## クイズ
+
+<FlashCards
+	title="高度なワークフローのクイズ"
+	cards={[
+		{ q: 'reusable workflow のネストの最大深さは？', a: '10 階層。1 つのトップレベルファイルあたりユニークな reusable workflow は最大 50 個。' },
+		{ q: '`workflow_run` で連鎖できる最大階層は？', a: '3' },
+		{ q: '`if:` でスキップされたジョブはどのステータスを報告する？', a: '**Success** — 必須チェックをブロックしません。' },
+		{ q: '`paths` フィルターでスキップされたワークフローは何を報告する？', a: '何も報告しません — 必須チェックは **Pending** のまま。' },
+		{ q: 'マージキューのために必須ワークフローに追加すべきイベントは？', a: '`merge_group`' },
+		{ q: '`queue: max` と `cancel-in-progress: true` は併用できる？', a: 'できません — 検証エラーになります。' },
+		{ q: '1 ワークフロー実行あたりのマトリックスジョブの上限は？', a: '256' },
+		{ q: '呼び出し元の `env:` は reusable workflow に引き継がれる？', a: 'いいえ — `inputs` か `vars` を使います。' },
+	]}
+/>
+
+<DocsLinks
+	links={[
+		{ label: 'ワークフロー構成の再利用（制限、アンカー）', href: 'https://docs.github.com/ja/actions/reference/workflows-and-actions/reusing-workflow-configurations' },
+		{ label: 'ワークフローの再利用（ハウツー）', href: 'https://docs.github.com/ja/actions/how-tos/reuse-automations/reuse-workflows' },
+		{ label: 'composite action の作成', href: 'https://docs.github.com/ja/actions/tutorials/create-actions/create-a-composite-action' },
+		{ label: 'ワークフロー構文（matrix、concurrency、cache-mode）', href: 'https://docs.github.com/ja/actions/reference/workflows-and-actions/workflow-syntax' },
+		{ label: 'ワークフローをトリガーするイベント', href: 'https://docs.github.com/ja/actions/reference/workflows-and-actions/events-that-trigger-workflows' },
+		{ label: 'デプロイと環境のリファレンス', href: 'https://docs.github.com/ja/actions/reference/workflows-and-actions/deployments-and-environments' },
+		{ label: 'カスタム保護ルールの構成', href: 'https://docs.github.com/ja/actions/how-tos/deploy/configure-and-manage-deployments/configure-custom-protection-rules' },
+		{ label: 'マージキューの管理', href: 'https://docs.github.com/ja/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue' },
+		{ label: '条件によるジョブの制御', href: 'https://docs.github.com/ja/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions' },
+		{ label: 'Actions の制限', href: 'https://docs.github.com/ja/actions/reference/limits' },
+	]}
+/>

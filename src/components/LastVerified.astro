@@ -1,0 +1,31 @@
+---
+/**
+ * <LastVerified date="2026-10" /> → "🗓️ Last verified: 2026-10" / "🗓️ 最終確認: 2026-10".
+ */
+import { labelsFor, resolveLang } from './i18n';
+
+interface Props {
+	date: string;
+	label?: string;
+	lang?: 'en' | 'ja';
+}
+const { date, label, lang } = Astro.props;
+const t = labelsFor(resolveLang(lang, Astro.currentLocale));
+---
+
+<p class="gh-last-verified">
+	<span aria-hidden="true">🗓️</span>
+	{label ?? t.lastVerified}: <time datetime={date}>{date}</time>
+</p>
+
+<style>
+	.gh-last-verified {
+		display: inline-block;
+		margin: 0;
+		padding: 0.1rem 0.6rem;
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: 999px;
+		font-size: var(--sl-text-xs);
+		color: var(--sl-color-gray-2);
+	}
+</style>

@@ -1,0 +1,158 @@
+/* GitHub-flavored accent palette for Starlight. */
+:root {
+	--sl-color-accent-low: #0c2d6b;
+	--sl-color-accent: #4493f8;
+	--sl-color-accent-high: #cae8ff;
+	--gh-success: #3fb950;
+	--gh-attention: #d29922;
+	--gh-done: #a371f7;
+	--gh-tldr-bg: rgba(163, 113, 247, 0.12);
+	--gh-tldr-border: #a371f7;
+}
+
+:root[data-theme='light'] {
+	--sl-color-accent-low: #ddf4ff;
+	--sl-color-accent: #0969da;
+	--sl-color-accent-high: #0a3069;
+	--gh-success: #1a7f37;
+	--gh-attention: #9a6700;
+	--gh-done: #8250df;
+	--gh-tldr-bg: #fbefff;
+	--gh-tldr-border: #8250df;
+}
+
+/* Tables: compact, zebra rows, horizontal scroll on small screens. */
+.sl-markdown-content table {
+	display: block;
+	overflow-x: auto;
+	font-size: var(--sl-text-sm);
+}
+.sl-markdown-content table th {
+	background-color: var(--sl-color-gray-6);
+	white-space: nowrap;
+}
+.sl-markdown-content table tr:nth-child(even) td {
+	background-color: color-mix(in srgb, var(--sl-color-gray-6) 50%, transparent);
+}
+
+/* Booth Q&A <details> blocks. */
+.sl-markdown-content details {
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 0.5rem;
+	padding: 0.5rem 1rem;
+	background: var(--sl-color-bg-nav);
+}
+.sl-markdown-content details > summary {
+	cursor: pointer;
+	font-weight: 600;
+	color: var(--sl-color-white);
+}
+.sl-markdown-content details[open] > summary {
+	margin-bottom: 0.5rem;
+}
+
+kbd {
+	font-family: var(--__sl-font-mono);
+	font-size: 0.85em;
+	padding: 0.1em 0.4em;
+	border: 1px solid var(--sl-color-gray-4);
+	border-bottom-width: 2px;
+	border-radius: 0.3em;
+	background: var(--sl-color-gray-6);
+}
+
+/* Mermaid diagrams: center and allow horizontal scroll. */
+pre.mermaid {
+	display: flex;
+	justify-content: center;
+	overflow-x: auto;
+	background: transparent;
+	border: none;
+}
+
+/* Shared styles for custom interactive components (src/components). */
+.gh-widget {
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 0.75rem;
+	padding: 1rem 1.25rem;
+	background: var(--sl-color-bg-nav);
+}
+.gh-widget__title {
+	margin: 0 0 0.75rem !important;
+	font-size: var(--sl-text-lg);
+	font-weight: 600;
+	color: var(--sl-color-white);
+}
+.gh-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	padding: 0.35rem 0.8rem;
+	border: 1px solid var(--sl-color-gray-4);
+	border-radius: 0.5rem;
+	background: var(--sl-color-gray-6);
+	color: var(--sl-color-white);
+	font: inherit;
+	font-size: var(--sl-text-sm);
+	cursor: pointer;
+	line-height: 1.4;
+}
+.gh-btn:hover {
+	border-color: var(--sl-color-accent);
+}
+.gh-btn:focus-visible,
+.gh-chip:focus-within {
+	outline: 2px solid var(--sl-color-accent);
+	outline-offset: 2px;
+}
+.gh-btn[disabled] {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+.gh-btn--primary {
+	background: var(--sl-color-accent);
+	border-color: var(--sl-color-accent);
+	color: var(--sl-color-black);
+}
+.gh-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	padding: 0.2rem 0.65rem;
+	border: 1px solid var(--sl-color-gray-4);
+	border-radius: 999px;
+	font-size: var(--sl-text-sm);
+	cursor: pointer;
+	user-select: none;
+}
+.gh-chip:has(input:checked) {
+	background: var(--sl-color-accent-low);
+	border-color: var(--sl-color-accent);
+	color: var(--sl-color-accent-high);
+}
+.gh-input {
+	padding: 0.35rem 0.6rem;
+	border: 1px solid var(--sl-color-gray-4);
+	border-radius: 0.5rem;
+	background: var(--sl-color-bg);
+	color: var(--sl-color-white);
+	font: inherit;
+	font-size: var(--sl-text-sm);
+}
+/* Widgets use .not-content to opt out of Starlight prose spacing; restore inline element styles. */
+.gh-widget code {
+	padding: 0.1em 0.3em;
+	border-radius: 0.25rem;
+	background: var(--sl-color-gray-6);
+	font-family: var(--__sl-font-mono);
+	font-size: 0.875em;
+}
+.gh-widget a {
+	color: var(--sl-color-text-accent);
+}
+.gh-widget a:hover {
+	color: var(--sl-color-white);
+}
+.gh-widget ul {
+	list-style: disc;
+}

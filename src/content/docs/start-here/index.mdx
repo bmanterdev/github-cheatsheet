@@ -1,0 +1,334 @@
+---
+title: Quick answers
+description: The most-asked Expert Center questions across Actions, Copilot, GHAS and the platform. Each answer is one or two lines and links to a deep dive.
+sidebar:
+  order: 0
+  label: Quick answers ⚡
+---
+
+import { Tabs, TabItem, Aside, Badge } from '@astrojs/starlight/components';
+import { TLDR, LastVerified } from '@components';
+
+<LastVerified date="2026-10" />
+
+<TLDR>
+
+- Each answer is one or two lines; follow **→** to the deep dive for diagrams, YAML and docs links.
+- Press <kbd>/</kbd> or <kbd>Ctrl</kbd>+<kbd>K</kbd> to search the whole site in English or Japanese.
+- Answers marked <Badge text="Verify" variant="caution" /> change often, so check docs.github.com before quoting them.
+
+</TLDR>
+
+```mermaid
+flowchart LR
+  Q["Visitor question"] --> T{"Topic?"}
+  T --> A["Actions"]
+  T --> C["Copilot"]
+  T --> G["GHAS"]
+  T --> P["Platform: migration, admin, billing"]
+  A & C & G & P --> D["Quick answer below"] --> DD["Deep-dive page + docs link"]
+```
+
+<Tabs syncKey="qa-topic">
+<TabItem label="⚙️ Actions">
+
+<details>
+<summary>Our required check is stuck at "Expected — waiting for status"</summary>
+
+The workflow was skipped by a `paths`/`branches` filter, so it never reports a status. Make a single `if: always()` aggregator job the only required check, and don't use path filters on required workflows. → [Advanced workflows](/github-cheatsheet/actions/advanced-workflows/) · [Troubleshooting](/github-cheatsheet/actions/troubleshooting/)
+
+</details>
+
+<details>
+<summary>Reusable workflow or composite action?</summary>
+
+A **reusable workflow** is a whole pipeline: jobs, runners, environments and secrets, nesting up to 10 levels. A **composite action** is a bundle of steps that runs inside the caller's job. Use reusable workflows for golden-path pipelines and composite actions for shared step logic. → [Advanced workflows](/github-cheatsheet/actions/advanced-workflows/)
+
+</details>
+
+<details>
+<summary>How do we deploy to AWS/Azure/GCP without long-lived keys?</summary>
+
+Use OIDC: set `permissions: id-token: write` and make the cloud trust policy match the `sub` claim, ideally pinned to repo **and** environment. Repos created after 2026-07-15 use an immutable `sub` format that includes IDs. → [Security hardening](/github-cheatsheet/actions/security/)
+
+</details>
+
+<details>
+<summary>Our merge queue waits forever</summary>
+
+Required workflows must also trigger on `on: merge_group`. → [Advanced workflows](/github-cheatsheet/actions/advanced-workflows/)
+
+</details>
+
+<details>
+<summary>Why didn't my bot's push trigger CI?</summary>
+
+Events created with `GITHUB_TOKEN` don't start new workflow runs, except `workflow_dispatch` and `repository_dispatch`. Use a GitHub App token if a chained run is required. → [Troubleshooting](/github-cheatsheet/actions/troubleshooting/)
+
+</details>
+
+<details>
+<summary>How do we enforce CI standards across hundreds of repos?</summary>
+
+Create an org or enterprise ruleset with **"Require workflows to pass before merging"** and target repos by custom property. Back it with reusable workflows and workflow templates. → [Enterprise patterns](/github-cheatsheet/actions/enterprise-patterns/)
+
+</details>
+
+<details>
+<summary>Is pull_request_target safe?</summary>
+
+Only if you never check out or run PR code with it. A default policy now blocks it in public repos, enforced from 2026-11-02 <Badge text="Verify" variant="caution" />. Pass untrusted input through `env:`, never through `${{ }}` inside `run:`. → [Security hardening](/github-cheatsheet/actions/security/)
+
+</details>
+
+<details>
+<summary>Should we pin actions to SHAs?</summary>
+
+Yes. Orgs can enforce full-SHA pinning through the allowed-actions policy, and Dependabot keeps the pins up to date. → [Security hardening](/github-cheatsheet/actions/security/)
+
+</details>
+
+<details>
+<summary>Self-hosted runners at scale on Kubernetes?</summary>
+
+Use ARC (Actions Runner Controller) with runner scale sets and ephemeral JIT pods. Never attach persistent self-hosted runners to public repos. → [Runners](/github-cheatsheet/actions/runners/)
+
+</details>
+
+<details>
+<summary>How big can the cache be?</summary>
+
+10 GB per repo is included. The limit can be raised with overage billing, and entries unused for 7 days are evicted. <Badge text="Verify" variant="caution" /> → [Performance & cost](/github-cheatsheet/actions/performance-cost/)
+
+</details>
+
+</TabItem>
+<TabItem label="🤖 Copilot">
+
+<details>
+<summary>How is Copilot billed now?</summary>
+
+Since June 1, 2026 Copilot uses **GitHub AI Credits** ($0.01 each), consumed by model and token usage; premium requests are legacy. Completions and next edit suggestions are unlimited on paid plans. Auto model selection gets a discount. <Badge text="Verify" variant="caution" /> → [Plans & billing](/github-cheatsheet/copilot/plans-billing/)
+
+</details>
+
+<details>
+<summary>What happens when we run out of credits?</summary>
+
+There's no fallback to a cheaper model. Orgs continue on paid overage by default unless an admin disables that policy. → [Plans & billing](/github-cheatsheet/copilot/plans-billing/)
+
+</details>
+
+<details>
+<summary>Should we build custom agents, prompts and skills, or let the agent figure it out?</summary>
+
+Start with defaults and add customization only when you see a **repeated** failure.
+
+- **Instructions:** short ones for build/test commands and non-obvious rules.
+- **Skills:** for repeatable specialist procedures; they load on demand.
+- **Custom agents:** for distinct roles with restricted tools.
+- **Hooks / CI:** for anything that must be enforced.
+
+→ [Best practices 2026](/github-cheatsheet/copilot/best-practices/)
+
+</details>
+
+<details>
+<summary>Prompt files or skills?</summary>
+
+Default to **skills**. They load automatically and work in the cloud agent, CLI and code review. Prompt files only work in IDEs. → [Customization](/github-cheatsheet/copilot/customization/)
+
+</details>
+
+<details>
+<summary>Do instructions guarantee rules are followed?</summary>
+
+No. Use a `preToolUse` hook, CI or rulesets for hard guarantees. → [Customization](/github-cheatsheet/copilot/customization/)
+
+</details>
+
+<details>
+<summary>Can the coding agent merge its own PR?</summary>
+
+No. It pushes only to `copilot/*` branches and opens draft PRs. A human must approve, and the person who requested the work can't approve it. CI waits for "Approve and run workflows". → [Coding agent](/github-cheatsheet/copilot/coding-agent/)
+
+</details>
+
+<details>
+<summary>Do you train on our code?</summary>
+
+Not on Business or Enterprise data. Free, Pro, Pro+ and Max data may be used unless the user opts out. <Badge text="Verify" variant="caution" /> → [Privacy & security](/github-cheatsheet/copilot/privacy-security/)
+
+</details>
+
+<details>
+<summary>Does content exclusion work everywhere?</summary>
+
+No. It does not apply in IDE agent mode, and CLI support is contradictory in the docs. Don't rely on it as a security boundary. → [Admin & governance](/github-cheatsheet/copilot/admin-governance/)
+
+</details>
+
+<details>
+<summary>Copilot Extensions?</summary>
+
+Copilot Extensions are retired; MCP servers replace them. → [CLI, Spaces, MCP](/github-cheatsheet/copilot/cli-and-more/)
+
+</details>
+
+<details>
+<summary>Copilot on GHES?</summary>
+
+Not available on GHES. GHE.com (data residency) is the alternative. → [Copilot overview](/github-cheatsheet/copilot/)
+
+</details>
+
+</TabItem>
+<TabItem label="🛡️ GHAS">
+
+<details>
+<summary>Is GHAS still one bundle?</summary>
+
+No. Since April 2025 it is sold as **Secret Protection** and **Code Security**, available on Team and Enterprise plans and billed per unique active committer over 90 days. → [GHAS overview](/github-cheatsheet/ghas/)
+
+</details>
+
+<details>
+<summary>Where should we start?</summary>
+
+1. Run the free secret risk assessment.
+2. Turn on push protection everywhere.
+3. Enable CodeQL default setup.
+4. Run security campaigns with Copilot Autofix.
+
+→ [Rollout at scale](/github-cheatsheet/ghas/rollout-at-scale/)
+
+</details>
+
+<details>
+<summary>Default or advanced setup?</summary>
+
+Start with default setup. With build-mode `none`, C/C++, C#, Java and Rust don't need a build. Move to advanced setup only for custom packs or config, manual builds, or monorepos. → [Code scanning](/github-cheatsheet/ghas/code-scanning/)
+
+</details>
+
+<details>
+<summary>Does Copilot Autofix need a Copilot license?</summary>
+
+No. Autofix comes with Code Security and is free on public repos. → [Code scanning](/github-cheatsheet/ghas/code-scanning/)
+
+</details>
+
+<details>
+<summary>Can developers bypass push protection?</summary>
+
+Yes, by default. With **delegated bypass**, a bypass becomes a request that a reviewer approves. → [Secret scanning](/github-cheatsheet/ghas/secret-scanning/)
+
+</details>
+
+<details>
+<summary>A secret leaked. What first?</summary>
+
+**Rotate or revoke it first.** Rewriting git history comes second. → [Secret scanning](/github-cheatsheet/ghas/secret-scanning/)
+
+</details>
+
+<details>
+<summary>Can we block PRs that introduce vulnerabilities?</summary>
+
+Yes. Use the ruleset rule **"Require code scanning results"**, and add the dependency review action for vulnerable dependencies. → [Code scanning](/github-cheatsheet/ghas/code-scanning/) · [Supply chain](/github-cheatsheet/ghas/supply-chain/)
+
+</details>
+
+<details>
+<summary>Too many Dependabot PRs</summary>
+
+Use `groups`, `cooldown` and auto-triage rules. → [Supply chain](/github-cheatsheet/ghas/supply-chain/)
+
+</details>
+
+<details>
+<summary>Custom frameworks aren't detected by CodeQL</summary>
+
+Model them with the CodeQL model editor and model packs <Badge text="Preview" variant="caution" />, or write custom query packs. → [CodeQL advanced](/github-cheatsheet/ghas/codeql-advanced/)
+
+</details>
+
+</TabItem>
+<TabItem label="🏢 Platform">
+
+<details>
+<summary>Which migration tool?</summary>
+
+- GHES, ADO Cloud, Bitbucket Server/DC and GitLab (via `gl2gh`) → **GitHub Enterprise Importer**.
+- Bitbucket Cloud → `git push --mirror` or GitHub Importer.
+- CI pipelines → **Actions Importer**.
+
+→ [Migration](/github-cheatsheet/migration/)
+
+</details>
+
+<details>
+<summary>What doesn't GEI migrate?</summary>
+
+Git LFS objects (push them afterwards) and pipelines. Non-commit activity is attributed to **mannequins**, which you reclaim afterwards. Destination rulesets can make a migration fail. → [GEI](/github-cheatsheet/migration/repos-gei/)
+
+</details>
+
+<details>
+<summary>EMU or personal accounts?</summary>
+
+Decide **before** creating the enterprise, because switching later means a new enterprise and a migration. GHE.com always uses EMU. → [Administration](/github-cheatsheet/administration/)
+
+</details>
+
+<details>
+<summary>How do overlapping rulesets combine?</summary>
+
+They aggregate and the most restrictive rule wins. Use **Evaluate** mode to test a ruleset before enforcing it. → [Governance](/github-cheatsheet/administration/governance/)
+
+</details>
+
+<details>
+<summary>How long is audit log data kept?</summary>
+
+180 days, or 7 days for Git events. Stream it to S3, Azure, Datadog, Splunk or other targets for longer retention. → [Governance](/github-cheatsheet/administration/governance/)
+
+</details>
+
+<details>
+<summary>Who consumes a GHE seat / GHAS committer?</summary>
+
+- **GHE seat:** org members and outside collaborators on private repos.
+- **GHAS committer:** a unique pusher in the last 90 days to a repo with the product enabled.
+
+→ [Billing](/github-cheatsheet/billing/)
+
+</details>
+
+<details>
+<summary>Can budgets hard-stop spending?</summary>
+
+For metered products, yes. For licenses, budgets only alert. → [Billing](/github-cheatsheet/billing/)
+
+</details>
+
+<details>
+<summary>How do we roll out Copilot?</summary>
+
+Run a pilot with champions, decide the policies, then roll out in waves while measuring the usage metrics dashboard and PR throughput. → [Copilot rollout](/github-cheatsheet/adoption/copilot-rollout/)
+
+</details>
+
+<details>
+<summary>Codespaces / Projects / Packages one-liners</summary>
+
+- **Codespaces:** org policies only apply to org-billed codespaces, and an IP allow list blocks them. → [Codespaces](/github-cheatsheet/codespaces/)
+- **Projects:** `GITHUB_TOKEN` can't access Projects; use an App token. → [Projects & Issues](/github-cheatsheet/projects-issues/)
+- **Packages:** fine-grained PATs don't work with Packages; use `GITHUB_TOKEN`. → [Packages](/github-cheatsheet/packages/)
+
+</details>
+
+</TabItem>
+</Tabs>
+
+<Aside type="tip">New to the site? See [How to use this site](/github-cheatsheet/start-here/how-to-use/) for a tour of the interactive components.</Aside>
