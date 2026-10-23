@@ -205,8 +205,12 @@ jobs:
       - run: ./deploy.sh
         env:
           TOKEN: ${{ secrets.DEPLOY_TOKEN }}
-      - if: failure()
-        run: echo "Build failed"
+  notify:
+    needs: [build, test, deploy]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Build failed"
 ```
 
 </TabItem>
@@ -214,7 +218,7 @@ jobs:
 
 ## Gotchas & talking points
 
-- **Each job runs on a fresh runner.** Jenkins stages often share a workspace, but in Actions you either re-checkout and rebuild, or pass artifacts between jobs.
+- **Jobs have no guaranteed shared workspace.** GitHub-hosted jobs get fresh execution environments; persistent self-hosted runners may reuse a machine and retain files. Jenkins stages often share a workspace, so re-checkout and rebuild as needed, or pass artifacts explicitly between Actions jobs.
 - **Interactive `input` steps** become **environment protection rules** (required reviewers or wait timers).
 - **Credentials:** don't copy static cloud keys. Use **OIDC** with AWS, Azure or GCP plus short-lived tokens.
 - **Shared libraries** → reusable workflows (`workflow_call`) in a central repo, governed by required workflows or rulesets.
